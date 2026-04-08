@@ -88,12 +88,18 @@ class LiveCameraNode:
         self._running = False
         self._skip_hub = False
 
-        self.vision_node = EdgeVisionNode(device=device, use_fp16=use_fp16)
+        self.adapter_weights_path = str(
+            Path("edge_node/lora_adapter") / f"{self.device_id}_adapter.bin"
+        )
+
+        self.vision_node = EdgeVisionNode(
+            device=device,
+            use_fp16=use_fp16,
+            lora_adapter_path=self.adapter_weights_path,
+        )
 
         self.transmitter = SecureTransmitter(
-            adapter_weights_path=str(
-                Path("edge_node/lora_adapter") / f"{self.device_id}_adapter.bin"
-            ),
+            adapter_weights_path=self.adapter_weights_path,
             hub_url=hub_url,
             device_id=self.device_id,
             key_path=key_path,

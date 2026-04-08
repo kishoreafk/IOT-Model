@@ -153,10 +153,11 @@ class FaissManager:
             return [emb for emb in self._raw_embeddings]
 
     def get_cluster_pseudo_labels(self, cluster_id: int) -> List[Optional[str]]:
-        """Return the stored pseudo-labels for every embedding in a cluster."""
+        """Return pseudo-labels aligned with cluster embeddings."""
         with self._lock:
             if not self.embedding_metadata:
                 return []
+
             if (
                 hasattr(self, "cluster_labels")
                 and self.cluster_labels is not None
@@ -168,7 +169,8 @@ class FaissManager:
                     for i in indices
                     if i < len(self.embedding_metadata)
                 ]
-            # Flat index (no clustering): return labels for all stored embeddings
+
+            # Flat index (single cluster): labels for all stored embeddings
             return [m.get("pseudo_label") for m in self.embedding_metadata]
 
     def get_cluster_summary(self) -> Dict[str, Any]:

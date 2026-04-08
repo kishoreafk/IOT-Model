@@ -91,7 +91,7 @@ class HubRetrainer:
         cluster_id: int,
         num_samples_this_device: int = 1,
         pseudo_labels: Optional[List[Optional[str]]] = None,
-    ) -> Optional[int]:
+    ) -> bool:
         """
         Trigger retraining if the cluster has enough samples.
         Runs in a background thread to avoid blocking the HTTP response.
@@ -111,7 +111,8 @@ class HubRetrainer:
 
         Returns
         -------
-        None — retraining is always asynchronous.
+        bool
+            True when retraining thread is queued, False otherwise.
         """
         global _retraining_in_progress
 
@@ -121,7 +122,7 @@ class HubRetrainer:
                 f"{len(cluster_embeddings)} samples (min={self.min_samples}). "
                 "Retraining deferred."
             )
-            return None
+            return False
 
         with _retraining_lock:
             if _retraining_in_progress:
@@ -129,7 +130,7 @@ class HubRetrainer:
                     "[HubRetrainer] Retraining already in progress — "
                     "new embeddings buffered."
                 )
-                return None
+                return False
             _retraining_in_progress = True
 
         try:
@@ -150,7 +151,7 @@ class HubRetrainer:
                 f"samples={len(cluster_embeddings)}, "
                 f"supervised={'yes' if has_labels else 'no (cosine fallback)'}."
             )
-            return None
+            return True
         except Exception as e:
             logger.error(
                 f"[HubRetrainer] Failed to start retraining thread: {e}",
@@ -158,7 +159,7 @@ class HubRetrainer:
             )
             with _retraining_lock:
                 _retraining_in_progress = False
-            return None
+            return False
 
     # ------------------------------------------------------------------
     # Background worker

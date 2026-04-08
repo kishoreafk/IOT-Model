@@ -314,14 +314,13 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                         "cluster_id": cluster_id,
                         "total_embeddings": total,
                         "cluster_size": len(cluster_embeddings),
-                        "retraining_scheduled": len(cluster_embeddings)
-                        >= retrainer.min_samples,
+                        "retraining_scheduled": retraining_scheduled,
                     },
                 )
                 logger.info(
                     f"[Ingress] escalate_hub from {device_id} → "
                     f"cluster={cluster_id}, cluster_size={len(cluster_embeddings)}, "
-                    f"total_embeddings={total}, retraining_scheduled={len(cluster_embeddings) >= retrainer.min_samples}"
+                    f"total_embeddings={total}, retraining_scheduled={retraining_scheduled}"
                 )
             except ValueError as e:
                 logger.error(
