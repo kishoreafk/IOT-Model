@@ -186,15 +186,10 @@ class SecureTransmitter:
         if sign_payload:
             # Sign BEFORE adding signature to payload
             payload_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
-            print(f"[Transmit] Signing payload bytes length: {len(payload_bytes)}")
             payload["signature"] = self._sign_payload(payload_bytes)
-            print(f"[Transmit] Payload now has signature: {'signature' in payload}")
 
         # Encrypt - this includes the signature in the encrypted payload
         encrypted_payload = self._encrypt_payload(payload)
-
-        # Debug: decrypt locally to verify
-        print(f"[Transmit] Encrypted payload length: {len(encrypted_payload)}")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             for attempt in range(self.retry_attempts):

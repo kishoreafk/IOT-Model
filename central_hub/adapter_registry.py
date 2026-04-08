@@ -89,12 +89,12 @@ async def push_adapter_update(device_id: str, hub_url: str) -> bool:
         device = _devices.get(device_id)
     
     if not device:
-        logger.warning(f"[AdapterRegistry] Cannot push: device {device_id} not registered")
+        logger.debug(f"[AdapterRegistry] Cannot push: device {device_id} not registered")
         return False
     
     edge_url = device.get("edge_url")
     if not edge_url:
-        logger.info(f"[AdapterRegistry] No edge_url for {device_id}, cannot push")
+        logger.debug(f"[AdapterRegistry] No edge_url for {device_id}, cannot push")
         return False
     
     meta = get_global_adapter_meta()
@@ -136,7 +136,7 @@ async def push_to_all_stale_edges(hub_url: str, current_version: int) -> int:
         if await push_adapter_update(device["device_id"], hub_url):
             pushed_count += 1
     
-    logger.info(f"[AdapterRegistry] Pushed to {pushed_count}/{len(stale_devices)} stale edges")
+    logger.debug(f"[AdapterRegistry] Pushed to {pushed_count}/{len(stale_devices)} stale edges")
     return pushed_count
 
 

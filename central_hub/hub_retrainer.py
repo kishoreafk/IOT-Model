@@ -239,6 +239,7 @@ class HubRetrainer:
             valid_labels = pseudo_labels or []
             y = torch.zeros(len(X), dtype=torch.long)
             unique_labels_in_batch = set()
+            
             for i, label in enumerate(valid_labels):
                 if label:
                     label_lower = label.lower()
@@ -248,11 +249,9 @@ class HubRetrainer:
                             unique_labels_in_batch.add(label)
                             break
 
-            # Log unique labels being trained on
-            labels_str = ", ".join(sorted(unique_labels_in_batch)) if unique_labels_in_batch else "none"
-            logger.info(
-                f"[HubRetrainer] Unique labels in batch: [{labels_str}]"
-            )
+            if unique_labels_in_batch:
+                labels_str = ", ".join(sorted(unique_labels_in_batch))
+                logger.warning(f"[HubRetrainer] Training on: [{labels_str}]")
 
             # ── 3. Set up embedding-space training ──────────────────
             self.model.train()
@@ -292,10 +291,9 @@ class HubRetrainer:
                     num_batches += 1
 
                 avg_loss = epoch_loss / max(num_batches, 1)
-                if (epoch + 1) % 5 == 0:
-                    logger.info(
-                        f"[HubRetrainer] Embedding-space epoch {epoch + 1}/{self.num_epochs}, "
-                        f"loss={avg_loss:.4f}"
+                if (epoch + 1) % 10 == 0:
+                    logger.warning(
+                        f"[HubRetrainer] Epoch {epoch + 1}/{self.num_epochs}, loss={avg_loss:.4f}"
                     )
 
             projection.eval()

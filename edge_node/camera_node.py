@@ -315,7 +315,17 @@ class LiveCameraNode:
         self, image: Image.Image, clip_pseudo_label: Optional[str] = None
     ):
         """Extract ViT embedding and send to hub for clustering and retraining."""
-        logger.info("[Escalate_Hub] Sending embedding to hub for retraining…")
+        now = time.time()
+        
+        # Rate limit: only send to hub once per 15 seconds max
+        if hasattr(self, '_last_escalate_time'):
+            if now - self._last_escalate_time < 15:
+                print(f"[Escalate_Hub] Throttled (wait {15 - (now - self._last_escalate_time):.1f}s)")
+                return
+        
+        self._last_escalate_time = now
+        
+        logger.warning("[Escalate_Hub] Sending embedding to hub for retraining…")
         try:
             vit_embedding = self.vision_node.extract_features(image)
         except Exception as e:
