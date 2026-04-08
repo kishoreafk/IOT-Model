@@ -50,7 +50,7 @@ def decrypt_payload(
     logger.info(f"[Decrypt] Payload keys: {list(payload.keys())}")
     logger.info(f"[Decrypt] Has signature: {'signature' in payload}")
     
-    signature = payload.get("signature")
+    signature = payload.pop("signature", None)  # Remove signature from payload
     if signature and os.path.exists(public_key_path):
         try:
             with open(public_key_path, "rb") as f:
@@ -59,9 +59,9 @@ def decrypt_payload(
                     backend=default_backend(),
                 )
             
-            # Use sort_keys=True to match edge serialization
+            # Serialize payload WITHOUT signature to match what was signed on edge
             payload_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
-            logger.info(f"[Decrypt] Payload bytes length: {len(payload_bytes)}")
+            logger.info(f"[Decrypt] Payload bytes length (without signature): {len(payload_bytes)}")
             
             signature_bytes = base64.b64decode(signature)
             logger.info(f"[Decrypt] Signature bytes length: {len(signature_bytes)}")
