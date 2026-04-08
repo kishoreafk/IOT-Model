@@ -128,7 +128,14 @@ class FaissManager:
             if self.total == 0 or len(self._raw_embeddings) == 0:
                 return []
             
-            # Return stored embeddings (IndexIDMap doesn't support reconstruct)
+            # If using actual clustering, filter by cluster_id
+            if hasattr(self, 'cluster_labels') and self.cluster_labels is not None and len(self.cluster_labels) > 0:
+                indices = np.where(self.cluster_labels == cluster_id)[0]
+                cluster_embeddings = [self._raw_embeddings[i] for i in indices if i < len(self._raw_embeddings)]
+                if cluster_embeddings:
+                    return cluster_embeddings
+            
+            # For flat index or no clustering labels, return all embeddings
             return [emb for emb in self._raw_embeddings]
 
     def get_cluster_summary(self) -> Dict[str, Any]:

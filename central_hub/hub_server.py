@@ -70,6 +70,7 @@ async def lifespan(app: FastAPI):
         model=moe_mgr.backbone,
         embedding_dim=embedding_dim,
         device=device,
+        min_samples=1,  # Trigger fine-tuning on first escalated embedding
     )
     task_tracker = TaskTracker()
 
@@ -193,11 +194,20 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
     try:
         # Use lightweight decrypt utility (no transformers dependency)
         from central_hub.decrypt_utils import decrypt_payload
-        decrypted = decrypt_payload(
-            encrypted_payload,
-            key_path=os.getenv("HUB_ENCRYPTION_KEY_PATH", "keys/encryption.key"),
-            public_key_path=os.getenv("HUB_PUBLIC_KEY_PATH", "keys/public_key.pem"),
-        )
+        try:
+            decrypted = decrypt_payload(
+                encrypted_payload,
+                key_path=os.getenv("HUB_ENCRYPTION_KEY_PATH", "keys/encryption.key"),
+                public_key_path=os.getenv("HUB_PUBLIC_KEY_PATH", "keys/public_key.pem"),
+            )
+        except FileNotFoundError as e:
+            logger.error(f"[Ingress] Encryption key missing for device {device_id}: {e}")
+            task_tracker.fail(task_id, f"Encryption key not found: {str(e)}")
+            return
+        except Exception as e:
+            logger.error(f"[Ingress] Decryption failed for device {device_id}: {e}", exc_info=True)
+            task_tracker.fail(task_id, f"Decryption failed: {str(e)}")
+            return
 
         trigger = decrypted.get("metadata", {}).get("trigger", "escalate_hub")
         embedding_list = decrypted.get("embedding")
@@ -209,65 +219,95 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
 
         if trigger == "adapt_local" and adapter_b64:
             import base64
-            adapter_bytes = base64.b64decode(adapter_b64)
-            submit_adapter(device_id, adapter_bytes, num_samples=num_samples)
-            new_version = run_fedavg(min_participants=1)
+            try:
+                adapter_bytes = base64.b64decode(adapter_b64)
+                submit_adapter(device_id, adapter_bytes, num_samples=num_samples)
+                new_version = run_fedavg(min_participants=1)
 
-            stale = get_stale_devices(new_version or 0)
-            task_tracker.complete(
-                task_id,
-                {
-                    "trigger": "adapt_local",
-                    "new_adapter_version": new_version,
-                    "stale_devices": stale,
-                },
-            )
-            logger.info(
-                f"[Ingress] adapt_local from {device_id} → "
-                f"FedAvg v{new_version}, {len(stale)} devices need sync."
-            )
+                stale = get_stale_devices(new_version or 0)
+                task_tracker.complete(
+                    task_id,
+                    {
+                        "trigger": "adapt_local",
+                        "new_adapter_version": new_version,
+                        "stale_devices": stale,
+                    },
+                )
+                logger.info(
+                    f"[Ingress] adapt_local from {device_id} → "
+                    f"FedAvg v{new_version}, {len(stale)} devices need sync."
+                )
+            except Exception as e:
+                logger.error(f"[Ingress] adapt_local processing failed for {device_id}: {e}", exc_info=True)
+                task_tracker.fail(task_id, f"adapt_local processing failed: {str(e)}")
+                return
 
         elif trigger == "escalate_hub" and embedding_list:
-            logger.info(f"[Ingress] Received embedding_list length: {len(embedding_list)}")
-            
-            if len(embedding_list) != 512:
-                raise ValueError(f"Expected 512-dim embedding, got {len(embedding_list)}")
-            
-            embedding = torch.tensor(embedding_list, dtype=torch.float32).unsqueeze(0)
+            try:
+                logger.info(f"[Ingress] Received embedding_list with type {type(embedding_list)}")
+                
+                embedding_array = np.array(embedding_list, dtype=np.float32)
+                logger.info(f"[Ingress] Embedding array shape: {embedding_array.shape}")
+                
+                # Handle nested arrays (e.g., shape (1, 512))
+                if embedding_array.ndim == 2:
+                    if embedding_array.shape[0] == 1:
+                        embedding_array = embedding_array[0]  # Squeeze first dimension
+                        logger.info(f"[Ingress] Squeezed embedding to shape: {embedding_array.shape}")
+                    else:
+                        raise ValueError(f"Expected 1D or (1, 512) embedding, got shape {embedding_array.shape}")
+                
+                if embedding_array.ndim != 1 or len(embedding_array) != 512:
+                    raise ValueError(f"Expected 512-dim embedding, got shape {embedding_array.shape}")
+                
+                embedding = torch.tensor(embedding_array, dtype=torch.float32).unsqueeze(0)
 
-            # Convert to numpy for FAISS
-            embedding_np = embedding.numpy()
-            cluster_id, total = faiss_mgr.add(embedding_np, device_id)
-            cluster_embeddings = faiss_mgr.get_cluster_embeddings(cluster_id)
+                # Convert to numpy for FAISS
+                embedding_np = embedding.numpy()
+                cluster_id, total = faiss_mgr.add(embedding_np, device_id)
+                cluster_embeddings = faiss_mgr.get_cluster_embeddings(cluster_id)
 
-            retrainer.maybe_retrain(
-                cluster_embeddings=cluster_embeddings,
-                cluster_id=cluster_id,
-                num_samples_this_device=1,
-            )
+                retraining_scheduled = retrainer.maybe_retrain(
+                    cluster_embeddings=cluster_embeddings,
+                    cluster_id=cluster_id,
+                    num_samples_this_device=1,
+                )
 
-            # MoE expects torch tensor
-            moe_mgr.route(embedding)
+                # MoE expects torch tensor
+                moe_mgr.route(embedding)
 
-            task_tracker.complete(
-                task_id,
-                {
-                    "trigger": "escalate_hub",
-                    "cluster_id": cluster_id,
-                    "total_embeddings": total,
-                    "retraining_scheduled": len(cluster_embeddings) >= retrainer.min_samples,
-                },
-            )
-            logger.info(
-                f"[Ingress] escalate_hub from {device_id} → "
-                f"cluster={cluster_id}, total={total}"
-            )
+                task_tracker.complete(
+                    task_id,
+                    {
+                        "trigger": "escalate_hub",
+                        "cluster_id": cluster_id,
+                        "total_embeddings": total,
+                        "cluster_size": len(cluster_embeddings),
+                        "retraining_scheduled": len(cluster_embeddings) >= retrainer.min_samples,
+                    },
+                )
+                logger.info(
+                    f"[Ingress] escalate_hub from {device_id} → "
+                    f"cluster={cluster_id}, cluster_size={len(cluster_embeddings)}, "
+                    f"total_embeddings={total}, retraining_scheduled={len(cluster_embeddings) >= retrainer.min_samples}"
+                )
+            except ValueError as e:
+                logger.error(f"[Ingress] Embedding validation failed for {device_id}: {e}")
+                task_tracker.fail(task_id, f"Embedding validation failed: {str(e)}")
+                return
+            except Exception as e:
+                logger.error(f"[Ingress] escalate_hub processing failed for {device_id}: {e}", exc_info=True)
+                task_tracker.fail(task_id, f"escalate_hub processing failed: {str(e)}")
+                return
         else:
-            raise ValueError(f"Unknown trigger '{trigger}' or missing payload fields.")
+            error_msg = f"Unknown trigger '{trigger}' or missing payload fields (embedding_list={embedding_list is not None}, adapter_b64={adapter_b64 is not None})"
+            logger.error(f"[Ingress] {error_msg}")
+            task_tracker.fail(task_id, error_msg)
+            return
 
     except Exception as e:
-        task_tracker.fail(task_id, str(e))
-        logger.error(f"[Ingress] Task {task_id} failed: {e}", exc_info=True)
+        logger.error(f"[Ingress] Unexpected error in task {task_id} from {device_id}: {e}", exc_info=True)
+        task_tracker.fail(task_id, f"Unexpected error: {str(e)}")
 
 
 @app.get("/status")

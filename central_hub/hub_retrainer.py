@@ -110,17 +110,26 @@ class HubRetrainer:
                 return None
             _retraining_in_progress = True
 
-        thread = threading.Thread(
-            target=self._retrain_background,
-            args=(cluster_embeddings, cluster_id, num_samples_this_device),
-            daemon=True,
-        )
-        thread.start()
-        logger.info(
-            f"[HubRetrainer] Retraining scheduled for cluster {cluster_id} "
-            f"({len(cluster_embeddings)} samples)."
-        )
-        return None
+        try:
+            thread = threading.Thread(
+                target=self._retrain_background,
+                args=(cluster_embeddings, cluster_id, num_samples_this_device),
+                daemon=True,
+            )
+            thread.start()
+            logger.info(
+                f"[HubRetrainer] Retraining scheduled for cluster {cluster_id} "
+                f"({len(cluster_embeddings)} samples)."
+            )
+            return None
+        except Exception as e:
+            logger.error(
+                f"[HubRetrainer] Failed to start retraining thread: {e}",
+                exc_info=True
+            )
+            with _retraining_lock:
+                _retraining_in_progress = False  # Reset lock if thread start fails
+            return None
 
     def _retrain_background(
         self,
