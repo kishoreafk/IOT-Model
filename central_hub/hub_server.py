@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
             num_labels=50,
         )
         
-        weights_path = Path("../model/best_vit_model.pth")
+        weights_path = Path("model/best_vit_model.pth")
         if weights_path.exists():
             try:
                 state_dict = torch.load(weights_path, map_location=device)
