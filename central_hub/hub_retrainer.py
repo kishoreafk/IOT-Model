@@ -246,12 +246,16 @@ class HubRetrainer:
                             y[i] = idx
                             break
 
-            # ── 3. Set up LoRA training ────────────────────────────
+            # ── 3. Set up embedding-space training ──────────────────
             self.model.train()
             
-            # Only train LoRA parameters (not full ViT)
-            optimizer = optim.Adam(self.model.parameters(), lr=1e-4)
+            # Use simple linear head on embeddings for training
+            # (ViT needs image pixels, but we have CLIP embeddings)
             criterion = nn.CrossEntropyLoss()
+            
+            # Create a simple projection layer that maps 512 embeddings → 50 classes
+            projection = nn.Linear(self.embedding_dim, len(self._class_names)).to(self.device)
+            optimizer = optim.Adam(projection.parameters(), lr=1e-3)
 
             # Create data loader
             dataset = TensorDataset(X, y)
@@ -262,21 +266,15 @@ class HubRetrainer:
                 f"{len(valid_labels)} labeled samples"
             )
 
-            # ── 4. LoRA training loop ────────────────────────────────
+            # ── 4. Training loop ────────────────────────────────
             for epoch in range(self.num_epochs):
                 epoch_loss = 0.0
                 num_batches = 0
                 for xb, yb in loader:
                     optimizer.zero_grad()
                     
-                    # Forward through ViT+LoRA
-                    outputs = self.model(xb)
-                    
-                    # Cross-entropy loss on LoRA-modified logits
-                    if hasattr(outputs, 'logits'):
-                        logits = outputs.logits
-                    else:
-                        logits = outputs
+                    # Forward through projection layer
+                    logits = projection(xb)
                     
                     loss = criterion(logits, yb)
                     loss.backward()
@@ -288,25 +286,18 @@ class HubRetrainer:
                 avg_loss = epoch_loss / max(num_batches, 1)
                 if (epoch + 1) % 5 == 0:
                     logger.info(
-                        f"[HubRetrainer] LoRA epoch {epoch + 1}/{self.num_epochs}, "
+                        f"[HubRetrainer] Embedding-space epoch {epoch + 1}/{self.num_epochs}, "
                         f"loss={avg_loss:.4f}"
                     )
 
-            self.model.eval()
+            projection.eval()
 
-            # ── 5. Extract LoRA adapter weights only ───────────────────
-            # Use PEFT to get only LoRA weights, NOT full ViT
-            try:
-                from peft import get_peft_state_dict
-                adapter_state_dict = get_peft_state_dict(self.model)
-            except ImportError:
-                adapter_state_dict = {
-                    k: v for k, v in self.model.state_dict().items()
-                    if 'lora' in k.lower() or 'adapter' in k.lower()
-                }
+            # ── 5. Extract trainable adapter weights ───────────────────
+            # Save the projection layer weights as adapter
+            adapter_state_dict = projection.state_dict()
             
             logger.info(
-                f"[HubRetrainer] Extracted {len(adapter_state_dict)} LoRA parameters"
+                f"[HubRetrainer] Extracted {len(adapter_state_dict)} adapter parameters"
             )
 
             # ── 6. Serialize and submit to FedAvg ────────────────────
