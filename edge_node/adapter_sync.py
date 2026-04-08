@@ -90,11 +90,19 @@ class AdapterSyncClient:
 
     async def _check_and_sync(self):
         async with httpx.AsyncClient(timeout=15) as client:
-            r = await client.get(
-                f"{self.hub_url}/adapters/latest/version",
-                params={"device_id": self.device_id},
-            )
-            r.raise_for_status()
+            try:
+                r = await client.get(
+                    f"{self.hub_url}/adapters/latest/version",
+                    params={"device_id": self.device_id},
+                )
+                if r.status_code == 404:
+                    logger.debug("[AdapterSync] No adapter on hub yet (first run)")
+                    return
+                r.raise_for_status()
+            except httpx.HTTPStatusError as e:
+                logger.warning(f"[AdapterSync] Version check failed: {e.response.status_code}")
+                return
+            
             meta = r.json()
             remote_version: int = meta["version"]
             remote_checksum: str = meta["checksum"]
@@ -106,9 +114,8 @@ class AdapterSyncClient:
                 )
                 return
 
-            logger.info(
-                f"[AdapterSync] New adapter available: "
-                f"v{self.local_version} → v{remote_version}. Downloading…"
+            logger.warning(
+                f"[AdapterSync] New adapter: v{self.local_version} → v{remote_version}"
             )
 
             dl = await client.get(
@@ -116,6 +123,9 @@ class AdapterSyncClient:
                 params={"device_id": self.device_id},
                 timeout=60,
             )
+            if dl.status_code == 404:
+                logger.warning("[AdapterSync] Adapter download 404 (hub still training)")
+                return
             dl.raise_for_status()
             adapter_bytes = dl.content
 
