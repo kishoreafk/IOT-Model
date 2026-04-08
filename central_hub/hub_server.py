@@ -406,6 +406,18 @@ def _process_ingress(task_id: str, encrypted_payload: str, device_id: str):
                 cluster_embeddings = faiss_mgr.get_cluster_embeddings(cluster_id)
                 cluster_pseudo_labels = faiss_mgr.get_cluster_pseudo_labels(cluster_id)
 
+                # Log the identified pseudo-label from CLIP
+                print(
+                    f"[Ingress] CLIP identified: label={clip_pseudo_label!r} "
+                    f"for device={device_id!r}",
+                    flush=True,
+                )
+                logger.info(
+                    "[Ingress] CLIP identified: label=%r for device=%r",
+                    clip_pseudo_label,
+                    device_id,
+                )
+
                 print(
                     f"[Ingress] escalate_hub from {device_id!r}: "
                     f"cluster={cluster_id}, cluster_size={len(cluster_embeddings)}, "

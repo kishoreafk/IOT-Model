@@ -238,13 +238,21 @@ class HubRetrainer:
             # Map pseudo-labels to class indices
             valid_labels = pseudo_labels or []
             y = torch.zeros(len(X), dtype=torch.long)
+            unique_labels_in_batch = set()
             for i, label in enumerate(valid_labels):
                 if label:
                     label_lower = label.lower()
                     for name, idx in label_to_idx.items():
                         if label_lower in name or name in label_lower:
                             y[i] = idx
+                            unique_labels_in_batch.add(label)
                             break
+
+            # Log unique labels being trained on
+            labels_str = ", ".join(sorted(unique_labels_in_batch)) if unique_labels_in_batch else "none"
+            logger.info(
+                f"[HubRetrainer] Unique labels in batch: [{labels_str}]"
+            )
 
             # ── 3. Set up embedding-space training ──────────────────
             self.model.train()
@@ -317,6 +325,25 @@ class HubRetrainer:
 
             new_version = run_fedavg(min_participants=1)
             elapsed = time.time() - t0
+
+            # Push notification to stale edges (async in separate thread)
+            import asyncio
+
+            def push_async():
+                try:
+                    hub_url = os.getenv("HUB_URL", "http://localhost:8000")
+                    from central_hub.adapter_registry import push_to_all_stale_edges
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    pushed = loop.run_until_complete(push_to_all_stale_edges(hub_url, new_version or 0))
+                    if pushed > 0:
+                        logger.info(f"[HubRetrainer] Pushed adapter v{new_version} to {pushed} edge(s)")
+                    loop.close()
+                except Exception as e:
+                    logger.warning(f"[HubRetrainer] Edge push notification failed: {e}")
+
+            push_thread = threading.Thread(target=push_async, daemon=True)
+            push_thread.start()
 
             done_msg = (
                 f"[HubRetrainer] ✓ LoRA Retrain COMPLETE — "
