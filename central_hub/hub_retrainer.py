@@ -98,7 +98,19 @@ class HubRetrainer:
             with open(class_names_path, "r") as f:
                 return [line.strip() for line in f.readlines()]
         
-        return ["person", "car", "truck", "dog", "cat", "bird", "bicycle", "chair", "table", "laptop"]
+        # Fallback: Tiny ImageNet 50 classes matching ViT training
+        return [
+            "goldfish", "salamander", "bullfrog", "toad", "alligator",
+            "boa", "trilobite", "scorpion", "spider", "tarantula",
+            "centipede", "goose", "koala", "jellyfish", "coral",
+            "snail", "slug", "nudibranch", "lobster", "crayfish",
+            "stork", "penguin", "albatross", "dugong", "chihuahua",
+            "terrier", "retriever", "retriever", "shepherd", "poodle",
+            "tabby", "persian", "cat", "cougar", "lion",
+            "bear", "ladybug", "fly", "bee", "grasshopper",
+            "stick_insect", "cockroach", "mantis", "dragonfly", "butterfly",
+            "butterfly", "butterfly", "cucumber", "guinea_pig", "pig", "ox"
+        ]
 
     # ------------------------------------------------------------------
     # Public API
