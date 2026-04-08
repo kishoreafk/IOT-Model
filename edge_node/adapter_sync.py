@@ -143,10 +143,40 @@ class AdapterSyncClient:
     def _hot_swap_adapter(self, adapter_bytes: bytes, new_version: int):
         """Load adapter state dict from bytes and inject into the ViT model."""
         try:
-            state_dict = torch.load(
+            loaded_data = torch.load(
                 io.BytesIO(adapter_bytes),
                 map_location=self.vision_node.device,
             )
+            
+            # Handle both wrapped (with metadata) and unwrapped (raw state_dict) formats
+            if isinstance(loaded_data, dict):
+                if "state_dict" in loaded_data and "adapter_type" in loaded_data:
+                    # Wrapped format with metadata
+                    state_dict = loaded_data["state_dict"]
+                    class_names = loaded_data.get("class_names", None)
+                    adapter_type = loaded_data.get("adapter_type", "unknown")
+                    
+                    logger.warning(
+                        f"[AdapterSync] Loaded adapter with metadata: "
+                        f"type={adapter_type}, num_classes={loaded_data.get('num_classes', '?')}"
+                    )
+                    
+                    # Store class names and metadata for projection layer use
+                    if class_names:
+                        self.vision_node.hub_projection_classes = class_names
+                        logger.warning(
+                            f"[AdapterSync] Stored hub class names: {class_names[:3]}... "
+                            f"(total {len(class_names)})"
+                        )
+                else:
+                    # Unwrapped format: assume it's a raw state_dict
+                    state_dict = loaded_data
+                    class_names = None
+                    adapter_type = "unknown"
+            else:
+                state_dict = loaded_data
+                class_names = None
+                adapter_type = "unknown"
             
             # Try loading into ViT model first (for LoRA adapters)
             loaded = False

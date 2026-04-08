@@ -39,20 +39,36 @@ def submit_adapter(
 ):
     """
     Called when a POST /ingress_update arrives with adapter weights.
+    Adapter can be either raw state_dict or wrapped in metadata dict.
     """
     try:
-        state_dict = torch.load(
+        loaded = torch.load(
             io.BytesIO(adapter_bytes), map_location="cpu"
         )
     except Exception as e:
         logger.error(f"[FedAvg] Cannot load adapter from {device_id}: {e}")
         return
 
+    # Handle both wrapped (dict with metadata) and unwrapped (raw state_dict) formats
+    if isinstance(loaded, dict):
+        if "state_dict" in loaded and "adapter_type" in loaded:
+            # Wrapped format: extract state_dict, preserve metadata
+            state_dict = loaded["state_dict"]
+            metadata = {k: v for k, v in loaded.items() if k != "state_dict"}
+        else:
+            # Unwrapped format: assume it's a raw state_dict
+            state_dict = loaded
+            metadata = {}
+    else:
+        state_dict = loaded
+        metadata = {}
+
     with _lock:
         _pending_adapters[device_id] = {
             "state_dict": state_dict,
             "weight": max(num_samples, 1),
             "timestamp": time.time(),
+            "metadata": metadata,
         }
         logger.info(
             f"[FedAvg] Adapter buffered from {device_id}. "
@@ -82,6 +98,13 @@ def run_fedavg(min_participants: int = 1) -> Optional[int]:
 
     total_weight = sum(p["weight"] for p in participants.values())
     averaged: Dict[str, torch.Tensor] = {}
+    
+    # Extract and preserve metadata from first adapter (class info, etc.)
+    first_metadata = None
+    for p in participants.values():
+        if p.get("metadata"):
+            first_metadata = p["metadata"]
+            break
 
     reference_keys = list(participants[next(iter(participants))]["state_dict"].keys())
 
@@ -99,8 +122,16 @@ def run_fedavg(min_participants: int = 1) -> Optional[int]:
         if weighted_sum is not None:
             averaged[key] = weighted_sum
 
+    # Wrap global adapter with metadata for edges
+    global_adapter = {
+        "state_dict": averaged,
+        "adapter_type": _global_adapter_type,
+    }
+    if first_metadata:
+        global_adapter.update(first_metadata)
+    
     buf = io.BytesIO()
-    torch.save(averaged, buf)
+    torch.save(global_adapter, buf)
     adapter_bytes = buf.getvalue()
     checksum = hashlib.sha256(adapter_bytes).hexdigest()
 
@@ -113,7 +144,7 @@ def run_fedavg(min_participants: int = 1) -> Optional[int]:
         new_version = _global_version
 
     logger.info(
-        f"[FedAvg] ✓ Global adapter updated → v{new_version} "
+        f"[FedAvg] Global adapter updated -> v{new_version} "
         f"({len(averaged)} tensors, {len(adapter_bytes)/1024:.1f} KB, "
         f"participants={list(participants.keys())})"
     )

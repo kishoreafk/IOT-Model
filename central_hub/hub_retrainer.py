@@ -214,7 +214,7 @@ class HubRetrainer:
         global _retraining_in_progress
         try:
             start_msg = (
-                f"[HubRetrainer] ▶ Starting LoRA retrain — "
+                f"[HubRetrainer] Starting LoRA retrain "
                 f"cluster={cluster_id}, samples={len(embeddings)}"
             )
             logger.warning(start_msg)
@@ -306,9 +306,23 @@ class HubRetrainer:
                 f"[HubRetrainer] Extracted {len(adapter_state_dict)} adapter parameters"
             )
 
-            # ── 6. Serialize and submit to FedAvg ────────────────────
+            # ── 6. Include class metadata in adapter ────────────────────
+            # This is critical: edge needs to know the class ordering!
+            adapter_with_metadata = {
+                "state_dict": adapter_state_dict,
+                "class_names": self._class_names,
+                "adapter_type": "projection_layer",
+                "num_classes": len(self._class_names),
+            }
+            
+            logger.info(
+                f"[HubRetrainer] Adapter metadata: {len(self._class_names)} classes, "
+                f"type=projection_layer"
+            )
+
+            # ── 7. Serialize and submit to FedAvg ────────────────────
             buf = io.BytesIO()
-            torch.save(adapter_state_dict, buf)
+            torch.save(adapter_with_metadata, buf)
             adapter_bytes = buf.getvalue()
 
             logger.info(
@@ -344,7 +358,7 @@ class HubRetrainer:
             push_thread.start()
 
             done_msg = (
-                f"[HubRetrainer] ✓ LoRA Retrain COMPLETE — "
+                f"[HubRetrainer] LoRA Retrain COMPLETE "
                 f"cluster={cluster_id}, version={new_version}, "
                 f"elapsed={elapsed:.1f}s, adapter_size={len(adapter_bytes)/1024:.1f}KB"
             )

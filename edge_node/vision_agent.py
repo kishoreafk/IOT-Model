@@ -34,6 +34,7 @@ class EdgeVisionNode:
         self.custom_vit = None
         self.lora_model = None
         self.hub_projection = None  # Projection layer from hub training
+        self.hub_projection_classes = None  # Class names from hub for projection layer
 
         self._init_clip()
         self._init_custom_vit()
@@ -147,8 +148,15 @@ class EdgeVisionNode:
                 clip_embedding = self.extract_features(image)
                 clip_embedding = clip_embedding.unsqueeze(0).to(self.device)
                 
+                # Use hub's class names if available, otherwise fall back to local ones
+                projection_classes = (
+                    self.hub_projection_classes 
+                    if self.hub_projection_classes 
+                    else candidate_labels
+                )
+                
                 with torch.no_grad():
-                    proj_layer = nn.Linear(512, len(candidate_labels)).to(self.device)
+                    proj_layer = nn.Linear(512, len(projection_classes)).to(self.device)
                     proj_layer.load_state_dict(self.hub_projection, strict=False)
                     proj_layer.eval()
                     
@@ -159,10 +167,15 @@ class EdgeVisionNode:
                     proj_confidence = top_prob.item()
                     proj_label_idx = top_idx.item()
                     
-                    if proj_label_idx < len(candidate_labels):
-                        proj_label = candidate_labels[proj_label_idx]
+                    if proj_label_idx < len(projection_classes):
+                        proj_label = projection_classes[proj_label_idx]
                     else:
                         proj_label = f"class_{proj_label_idx}"
+                    
+                    logger.warning(
+                        f"[Hub Projection] {proj_label} ({proj_confidence:.2%}) "
+                        f"using hub-trained adapter (classes: {len(projection_classes)})"
+                    )
                     
                     # Use hub projection result
                     if proj_confidence > 0.5:
