@@ -1,0 +1,117 @@
+# Implementation Plan
+
+- [x] 1. Write bug condition exploration test
+  - **Property 1: Bug Condition** - CLIP Uses Wrong Candidate Labels Causing Lifecycle Failures
+  - **CRITICAL**: This test MUST FAIL on unfixed code - failure confirms the bug exists
+  - **DO NOT attempt to fix the test or the code when it fails**
+  - **NOTE**: This test encodes the expected behavior - it will validate the fix when it passes after implementation
+  - **GOAL**: Surface counterexamples that demonstrate the complete lifecycle bug exists
+  - **Scoped PBT Approach**: Test the full lifecycle with concrete failing cases (camera sees "car" → CLIP returns "goldfish" → hub trains on wrong classes → edge fails to load adapter → inference displays wrong label)
+  - Test Phase 1: Verify CLIP uses 50 ViT training classes as candidates when camera sees "car", returns "goldfish" instead of "car"
+  - Test Phase 2: Verify hub receives wrong clip_pseudo_label ("goldfish"), trains on 47 unique wrong classes instead of 50
+  - Test Phase 3: Verify edge node fails to load hub adapter with RuntimeError: size mismatch (47 ≠ 50)
+  - Test Phase 4: Verify edge node displays "goldfish" instead of "car" when using hub projection (if shape mismatch bypassed)
+  - The test assertions should match the Expected Behavior Properties from design (Properties 1-4)
+  - Run test on UNFIXED code
+  - **EXPECTED OUTCOME**: Test FAILS (this is correct - it proves the bug exists across all 4 phases)
+  - Document counterexamples found: wrong CLIP labels, hub class count mismatch, shape mismatch error, wrong inference display
+  - Mark task complete when test is written, run, and failures are documented
+  - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11_
+
+- [ ] 2. Write preservation property tests (BEFORE implementing fix)
+  - **Property 2: Preservation** - ViT High-Confidence, Local Adaptation, and Hub Workflows
+  - **IMPORTANT**: Follow observation-first methodology
+  - Observe: ViT classifies "goldfish" image with confidence 0.92 on unfixed code (no CLIP invoked)
+  - Observe: ViT classifies "salamander" with confidence 0.78, triggers adapt_local, LoRA fine-tunes, sends adapter to hub
+  - Observe: Hub receives adapter weights, runs FedAvg, broadcasts global adapter
+  - Observe: Hub receives escalate_hub updates, stores in FAISS, clusters, triggers retraining
+  - Write property-based test 1: For all images with ViT confidence >= 0.85, classification result is identical to unfixed code (CLIP not invoked)
+  - Write property-based test 2: For all images with ViT confidence in [0.60, 0.85), local adaptation workflow (LoRA + FedAvg) is identical to unfixed code
+  - Write property-based test 3: For all escalate_hub events, hub retraining workflow structure is identical to unfixed code (only class names differ)
+  - Property-based testing generates many test cases for stronger preservation guarantees
+  - Verify tests PASS on UNFIXED code
+  - **EXPECTED OUTCOME**: Tests PASS (this confirms baseline behavior to preserve)
+  - Mark task complete when tests are written, run, and passing on unfixed code
+  - _Requirements: 3.1, 3.2, 3.3, 3.4, 3.5, 3.6, 3.7_
+
+- [ ] 3. Fix adapter shape mismatch and class name propagation across lifecycle
+
+  - [ ] 3.1 Phase 1 Fix: Expand CLIP candidate labels to broad real-world categories
+    - Modify `edge_node/camera_node.py` __init__ method
+    - Replace small hardcoded candidate_labels (10 items) with comprehensive set of 100+ real-world object categories
+    - Include: vehicles (car, truck, bus, motorcycle, bicycle), people (person, child, adult), animals (dog, cat, bird, horse), buildings (house, building, store, office), natural elements (tree, grass, sky, cloud, sun, moon, flower, plant), indoor objects (chair, table, desk, bed, sofa, door, window), electronics (computer, laptop, phone, keyboard, mouse, monitor), everyday items (book, pen, paper, bag, backpack, bottle, cup, plate), food (food, fruit, vegetable, bread, meat), and more
+    - Ensure candidate_labels covers common real-world objects that cameras might see
+    - Modify `edge_node/vision_agent.py` run_inference method to use broad candidate_labels from camera_node
+    - Ensure CLIP always uses broad candidate_labels, not _get_default_labels() (50 ViT training classes)
+    - _Bug_Condition: isBugCondition(input) where input.candidate_labels == class_names_from_file("configs/class_names.txt") AND input.image_contains_real_world_object NOT IN input.candidate_labels_
+    - _Expected_Behavior: CLIP SHALL perform zero-shot classification using broad real-world categories (100+ classes) and return actual object name (e.g., "car") not closest match from 50 ViT classes (e.g., "goldfish")_
+    - _Preservation: ViT high-confidence classification (>= known_threshold) must continue to work without invoking CLIP_
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 3.1_
+
+  - [ ] 3.2 Phase 2 Fix: Hub trains on CLIP-identified classes with correct metadata
+    - Modify `central_hub/hub_retrainer.py` _retrain_background method
+    - Extract unique class names from pseudo_labels parameter (CLIP-identified classes from edge nodes)
+    - Build unique_classes list: `unique_classes = sorted(set(label for label in pseudo_labels if label))`
+    - Create label_to_idx mapping: `label_to_idx = {name: i for i, name in enumerate(unique_classes)}`
+    - Create projection layer with N classes: `projection = nn.Linear(self.embedding_dim, len(unique_classes))`
+    - Include correct class_names in adapter metadata: `class_names: unique_classes` (not self._class_names)
+    - Handle edge cases: empty pseudo_labels, None pseudo_labels, duplicate class names
+    - _Bug_Condition: hub_trains_on_wrong_class_names() where hub uses self._class_names (50 ViT training classes) instead of unique CLIP-identified classes_
+    - _Expected_Behavior: Hub SHALL train projection layer on N unique CLIP-identified class names, include class_names in metadata, create Linear(512 → N)_
+    - _Preservation: Hub retraining workflow structure (FAISS storage, clustering, retraining trigger) must remain unchanged_
+    - _Requirements: 2.5, 2.6, 2.7, 3.5, 3.6_
+
+  - [ ] 3.3 Phase 3 Fix: Edge nodes load variable-sized adapters correctly
+    - Modify `edge_node/adapter_sync.py` _hot_swap_adapter method
+    - Extract num_classes from adapter metadata (e.g., 47 instead of 50)
+    - Extract class_names from adapter metadata (CLIP-identified classes)
+    - Create new projection layer with correct shape: `proj_layer = nn.Linear(512, num_classes).to(self.vision_node.device)`
+    - Load state_dict into newly created projection layer (should succeed now - no shape mismatch)
+    - Store hub class_names: `self.vision_node.hub_projection_classes = class_names`
+    - Remove hardcoded num_classes = 50 assumption
+    - _Bug_Condition: edge_fails_to_load_hub_adapter_due_to_shape_mismatch() where edge tries to load Linear(512 → 47) into existing Linear(512 → 50)_
+    - _Expected_Behavior: Edge SHALL successfully load adapter by creating new projection layer with shape Linear(512 → N), store hub's class_names for inference_
+    - _Preservation: Adapter sync polling and hot-swapping workflow must remain unchanged_
+    - _Requirements: 2.8, 2.9, 3.7_
+
+  - [ ] 3.4 Phase 4 Fix: Edge inference uses hub class names for display
+    - Modify `edge_node/vision_agent.py` run_inference method
+    - In hub_projection inference branch, use self.hub_projection_classes for labeling output
+    - Ensure hub_projection_classes is always used when hub_projection is active
+    - Remove fallback to candidate_labels or _get_default_labels() when hub_projection is active
+    - Verify visual feedback in camera_node displays correct CLIP-identified class names
+    - _Bug_Condition: edge uses local class_names.txt (50 ViT training classes) for inference display instead of hub's CLIP-identified class names_
+    - _Expected_Behavior: Edge SHALL use hub's class_names (not local ViT class_names) to label output, display actual CLIP-identified object name (e.g., "car") not ViT training class (e.g., "goldfish")_
+    - _Preservation: ViT high-confidence classification display must remain unchanged_
+    - _Requirements: 2.10, 2.11, 3.1_
+
+  - [ ] 3.5 Verify bug condition exploration test now passes
+    - **Property 1: Expected Behavior** - Complete Lifecycle Works Correctly
+    - **IMPORTANT**: Re-run the SAME test from task 1 - do NOT write a new test
+    - The test from task 1 encodes the expected behavior across all 4 phases
+    - When this test passes, it confirms the expected behavior is satisfied
+    - Run bug condition exploration test from step 1
+    - Verify Phase 1: CLIP uses broad candidate labels, returns "car" (not "goldfish")
+    - Verify Phase 2: Hub trains on CLIP-identified classes (e.g., 47 unique classes), includes class_names in metadata
+    - Verify Phase 3: Edge loads hub adapter successfully (no shape mismatch), stores hub class_names
+    - Verify Phase 4: Edge inference displays "car" (not "goldfish") using hub class_names
+    - **EXPECTED OUTCOME**: Test PASSES (confirms bug is fixed across all 4 phases)
+    - _Requirements: 2.1, 2.2, 2.3, 2.4, 2.5, 2.6, 2.7, 2.8, 2.9, 2.10, 2.11_
+
+  - [ ] 3.6 Verify preservation tests still pass
+    - **Property 2: Preservation** - ViT High-Confidence, Local Adaptation, and Hub Workflows
+    - **IMPORTANT**: Re-run the SAME tests from task 2 - do NOT write new tests
+    - Run preservation property tests from step 2
+    - Verify ViT high-confidence classification is unchanged (CLIP not invoked for confidence >= 0.85)
+    - Verify local adaptation workflow is unchanged (LoRA fine-tuning + FedAvg for confidence in [0.60, 0.85))
+    - Verify hub retraining workflow structure is unchanged (only class names differ, not workflow)
+    - **EXPECTED OUTCOME**: Tests PASS (confirms no regressions)
+    - Confirm all tests still pass after fix (no regressions)
+
+- [ ] 4. Checkpoint - Ensure all tests pass
+  - Run all bug condition exploration tests (should pass after fix)
+  - Run all preservation property tests (should still pass)
+  - Run unit tests for CLIP candidate labels, hub projection creation, adapter loading, inference display
+  - Run integration tests for full lifecycle (edge detection → hub training → adapter sync → edge inference)
+  - Verify no regressions in ViT high-confidence classification, local adaptation, FedAvg, hub retraining
+  - Ensure all tests pass, ask the user if questions arise

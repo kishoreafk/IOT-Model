@@ -233,8 +233,19 @@ class HubRetrainer:
             print(start_msg, flush=True)
             t0 = time.time()
 
-            # ── 1. Use stored class names ────────────────────────────────
-            label_to_idx = {name.lower(): i for i, name in enumerate(self._class_names)}
+            # ── 1. Extract unique CLIP-identified classes ─────────────────
+            # Get unique class names from pseudo_labels (CLIP-identified from edges)
+            valid_labels = pseudo_labels or []
+            unique_classes = sorted(set(label for label in valid_labels if label and label.strip()))
+            
+            if not unique_classes:
+                logger.warning("[HubRetrainer] No valid pseudo-labels, skipping retrain")
+                return
+            
+            # Build label_to_idx for unique CLIP-identified classes
+            label_to_idx = {name.lower(): i for i, name in enumerate(unique_classes)}
+            
+            logger.warning(f"[HubRetrainer] Training on {len(unique_classes)} unique CLIP classes: {unique_classes[:5]}...")
 
             # ── 2. Prepare embeddings and labels ───────────────────
             processed = []
@@ -247,8 +258,7 @@ class HubRetrainer:
 
             X = torch.stack(processed)  # (N, embedding_dim=512)
 
-            # Map pseudo-labels to class indices
-            valid_labels = pseudo_labels or []
+            # Map pseudo-labels to class indices using unique_classes
             y = torch.zeros(len(X), dtype=torch.long)
             unique_labels_in_batch = set()
             
@@ -272,8 +282,8 @@ class HubRetrainer:
             # (ViT needs image pixels, but we have CLIP embeddings)
             criterion = nn.CrossEntropyLoss()
             
-            # Create a simple projection layer that maps 512 embeddings → 50 classes
-            projection = nn.Linear(self.embedding_dim, len(self._class_names)).to(self.device)
+            # Create projection layer with N classes (CLIP-identified unique classes)
+            projection = nn.Linear(self.embedding_dim, len(unique_classes)).to(self.device)
             optimizer = optim.Adam(projection.parameters(), lr=1e-3)
 
             # Create data loader
@@ -320,16 +330,17 @@ class HubRetrainer:
 
             # ── 6. Include class metadata in adapter ────────────────────
             # This is critical: edge needs to know the class ordering!
+            # Use unique_classes (CLIP-identified) not self._class_names (50 ViT classes)
             adapter_with_metadata = {
                 "state_dict": adapter_state_dict,
-                "class_names": self._class_names,
+                "class_names": unique_classes,
                 "adapter_type": "projection_layer",
-                "num_classes": len(self._class_names),
+                "num_classes": len(unique_classes),
             }
             
             logger.info(
-                f"[HubRetrainer] Adapter metadata: {len(self._class_names)} classes, "
-                f"type=projection_layer"
+                f"[HubRetrainer] Adapter metadata: {len(unique_classes)} classes, "
+                f"type=projection_layer, classes={unique_classes[:5]}..."
             )
 
             # ── 7. Serialize and submit to FedAvg ────────────────────

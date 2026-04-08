@@ -71,18 +71,56 @@ class LiveCameraNode:
         self.hub_url = hub_url
         self.camera_index = camera_index
         self.inference_interval = inference_interval
+        
+        # Broad candidate labels for CLIP zero-shot classification
+        # These are real-world categories that cameras might see
+        # NOT the 50 ViT training classes (goldfish, salamander, etc.)
         self.candidate_labels = candidate_labels or [
-            "car",
-            "truck",
-            "person",
-            "bicycle",
-            "dog",
-            "cat",
-            "chair",
-            "table",
-            "phone",
-            "laptop",
+            # Vehicles
+            "car", "truck", "bus", "motorcycle", "bicycle", "scooter", "train", "boat", "airplane", "helicopter",
+            "ambulance", "fire truck", "police car", "taxi", "van", "semi-truck", "pickup truck", "SUV", "sedan", "sports car",
+            
+            # People
+            "person", "child", "adult", "man", "woman", "group of people", "crowd", "face", "person walking", "person running",
+            
+            # Animals
+            "dog", "cat", "bird", "horse", "cow", "sheep", "pig", "chicken", "duck", "goose",
+            "rabbit", "squirrel", "deer", "bear", "lion", "tiger", "wolf", "fox", "wildlife", "pet",
+            
+            # Buildings & Structures
+            "house", "building", "store", "office", "apartment", "school", "hospital", "church", "bank", "restaurant",
+            "hotel", "factory", "warehouse", "bridge", "tower", "wall", "fence", "gate", "parking lot", "road",
+            
+            # Nature
+            "tree", "grass", "forest", "bush", "plant", "flower", "garden", "mountain", "hill", "rock",
+            "sky", "cloud", "sun", "moon", "star", "rain", "snow", "water", "river", "lake", "ocean", "beach", "sand",
+            
+            # Indoor Objects
+            "chair", "table", "desk", "bed", "couch", "sofa", "shelf", "cabinet", "drawer", "door", "window",
+            "floor", "ceiling", "wall", "curtain", "blind", "lamp", "light", "fan", "clock", "mirror",
+            
+            # Electronics
+            "computer", "laptop", "phone", "tablet", "keyboard", "mouse", "monitor", "screen", "camera", "television",
+            "remote", "printer", "router", "speaker", "headphones", "charger", "battery", "wire", "cable",
+            
+            # Everyday Items
+            "book", "pen", "pencil", "paper", "notebook", "folder", "bag", "backpack", "purse", "wallet",
+            "bottle", "cup", "glass", "plate", "bowl", "spoon", "fork", "knife", "food", "drink",
+            "clothes", "shirt", "pants", "dress", "shoe", "hat", "glasses", "umbrella", "watch", "jewelry",
+            
+            # Food & Kitchen
+            "fruit", "vegetable", "bread", "meat", "fish", "cheese", "egg", "milk", "juice", "coffee",
+            "tea", "wine", "beer", "snack", "cake", "cookie", "candy", "spice", "sauce", "soup",
+            
+            # Sports & Recreation
+            "ball", "bat", "racket", "net", "goal", "court", "field", "track", "pool", "gym",
+            "bicycle helmet", "sports equipment", "toy", "game", "instrument", "musical instrument",
+            
+            # Other
+            "box", "container", "basket", "tool", "machine", "vehicle part", "sign", "symbol", "flag",
+            "trash", "recycling", "construction", "vehicle", "animal", "person", "object", "scene"
         ]
+        
         self.adapter_poll_interval = adapter_poll_interval
         self._last_inference_time = 0.0
         self._running = False
