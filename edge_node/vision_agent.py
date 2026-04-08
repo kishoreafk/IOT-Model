@@ -30,6 +30,7 @@ class EdgeVisionNode:
         self.clip_processor = None
         self.custom_vit = None
         self.lora_model = None
+        self.hub_projection = None  # Projection layer from hub training
 
         self._init_clip()
         self._init_custom_vit()
@@ -125,6 +126,7 @@ class EdgeVisionNode:
     ) -> Tuple[str, List[float], List[str], Optional[str]]:
         """
         Run inference on custom ViT model first.
+        If hub_projection is available (from hub training), use it on CLIP embeddings.
         If ViT is uncertain, use CLIP zero-shot to get pseudo-labels for fine-tuning.
 
         Returns:
@@ -136,6 +138,38 @@ class EdgeVisionNode:
         if candidate_labels is None:
             candidate_labels = self._get_default_labels()
 
+        # If hub_projection exists (from hub), apply it on CLIP embeddings
+        if hasattr(self, 'hub_projection') and self.hub_projection is not None:
+            try:
+                clip_embedding = self.extract_features(image)
+                clip_embedding = clip_embedding.unsqueeze(0).to(self.device)
+                
+                with torch.no_grad():
+                    proj_layer = nn.Linear(512, len(candidate_labels)).to(self.device)
+                    proj_layer.load_state_dict(self.hub_projection, strict=False)
+                    proj_layer.eval()
+                    
+                    logits = proj_layer(clip_embedding)
+                    probs = torch.softmax(logits, dim=-1)
+                    
+                    top_prob, top_idx = probs.max(dim=-1)
+                    proj_confidence = top_prob.item()
+                    proj_label_idx = top_idx.item()
+                    
+                    if proj_label_idx < len(candidate_labels):
+                        proj_label = candidate_labels[proj_label_idx]
+                    else:
+                        proj_label = f"class_{proj_label_idx}"
+                    
+                    # Use hub projection result
+                    if proj_confidence > 0.5:
+                        return "Known", [proj_confidence], [proj_label], proj_label
+                    else:
+                        return "Escalate_Hub", [proj_confidence], [proj_label], proj_label
+            except Exception as e:
+                logger.debug(f"Hub projection inference failed: {e}")
+
+        # Standard ViT inference
         model = self.lora_model if self.lora_model else self.custom_vit
         if model is None:
             raise ValueError("No model available for inference")

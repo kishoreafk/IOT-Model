@@ -148,30 +148,38 @@ class AdapterSyncClient:
                 map_location=self.vision_node.device,
             )
             
+            # Try loading into ViT model first (for LoRA adapters)
+            loaded = False
             if hasattr(self.vision_node, 'lora_model') and self.vision_node.lora_model is not None:
                 model_dict = self.vision_node.lora_model.state_dict()
                 filtered = {
                     k: v for k, v in state_dict.items() if k in model_dict
                 }
-                model_dict.update(filtered)
-                self.vision_node.lora_model.load_state_dict(model_dict, strict=False)
-            elif hasattr(self.vision_node, 'custom_vit') and self.vision_node.custom_vit is not None:
+                if filtered:
+                    model_dict.update(filtered)
+                    self.vision_node.lora_model.load_state_dict(model_dict, strict=False)
+                    loaded = True
+            
+            if not loaded and hasattr(self.vision_node, 'custom_vit') and self.vision_node.custom_vit is not None:
                 model_dict = self.vision_node.custom_vit.state_dict()
                 filtered = {
                     k: v for k, v in state_dict.items() if k in model_dict
                 }
-                model_dict.update(filtered)
-                self.vision_node.custom_vit.load_state_dict(model_dict, strict=False)
-            else:
-                logger.warning("[AdapterSync] No model available to hot-swap into.")
-                return
+                if filtered:
+                    model_dict.update(filtered)
+                    self.vision_node.custom_vit.load_state_dict(model_dict, strict=False)
+                    loaded = True
+            
+            # If not loaded (projection layer adapter), apply as custom classifier
+            if not loaded:
+                self.vision_node.hub_projection = state_dict
+                logger.warning("[AdapterSync] Loaded hub projection (embedding→class)")
 
             old_version = self.local_version
             self.local_version = new_version
-            logger.info(
-                f"[AdapterSync] ✓ Hot-swap complete: "
+            logger.warning(
+                f"[AdapterSync] ✓ Adapter loaded: "
                 f"v{old_version} → v{new_version}"
             )
         except Exception as e:
             logger.error(f"[AdapterSync] Hot-swap failed: {e}. Keeping current adapter.")
-            raise
