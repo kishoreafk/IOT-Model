@@ -21,7 +21,7 @@ class SecureTransmitter:
     def __init__(
         self,
         adapter_weights_path: str,
-        hub_url: str = "http://localhost:8000",
+        hub_url: Optional[str] = None,
         device_id: str = "edge_device_001",
         key_path: str = "keys/encryption.key",
         private_key_path: str = "keys/private_key.pem",
@@ -30,10 +30,20 @@ class SecureTransmitter:
         retry_backoff: Optional[list] = None,
     ):
         self.adapter_weights_path = adapter_weights_path
+        
+        # Load hub URL from environment if not explicitly provided
+        if hub_url is None:
+            hub_url = os.getenv("HUB_URL", "http://localhost:8000")
+            
         self.hub_url = hub_url.rstrip("/")
         self.device_id = device_id
         self.retry_attempts = retry_attempts
         self.retry_backoff = retry_backoff or [1, 3, 9]
+        
+        # Store key paths for registration
+        self.key_path = key_path
+        self.private_key_path = private_key_path
+        self.public_key_path = public_key_path
 
         self.fernet = self._load_fernet_key(key_path)
         self.private_key = self._load_private_key(private_key_path)

@@ -2,17 +2,15 @@ import asyncio
 import httpx
 
 async def check():
+    HUB = "http://10.243.38.174:8000"
     async with httpx.AsyncClient(timeout=30) as c:
-        r = await c.get('http://localhost:8000/status')
+        r = await c.get(f'{HUB}/status')
         print("STATUS:", r.json())
         
-        r = await c.get('http://localhost:8000/clusters')
+        r = await c.get(f'{HUB}/clusters')
         print("CLUSTERS:", r.json())
         
-        r = await c.get('http://localhost:8000/devices')
+        r = await c.get(f'{HUB}/devices')
         print("DEVICES:", r.json())
-        
-        r = await c.get('http://localhost:8000/tasks')
-        print("TASKS:", r.json())
 
 asyncio.run(check())
