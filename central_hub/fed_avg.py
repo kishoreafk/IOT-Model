@@ -29,6 +29,7 @@ _pending_adapters: Dict[str, Dict] = {}
 _global_version: int = 0
 _global_checksum: str = ""
 _global_adapter_path = Path("hub_data/global_adapter.bin")
+_global_adapter_type: str = "lora_vit"
 
 
 def submit_adapter(
@@ -120,11 +121,12 @@ def run_fedavg(min_participants: int = 1) -> Optional[int]:
 
 
 def get_global_adapter_meta() -> Dict:
-    """Return current version + checksum for /adapters/latest/version."""
+    """Return current version + checksum + type for /adapters/latest/version."""
     with _lock:
         return {
             "version": _global_version,
             "checksum": _global_checksum,
+            "adapter_type": _global_adapter_type,
         }
 
 

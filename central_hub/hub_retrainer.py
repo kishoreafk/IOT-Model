@@ -19,8 +19,10 @@ Workflow triggered by POST /ingress_update with trigger="escalate_hub":
 
 import io
 import logging
+import os
 import threading
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -84,8 +86,19 @@ class HubRetrainer:
         self.min_samples = min_samples
         self.device = torch.device(device)
 
+        self._class_names = self._get_default_labels()
+
         # Move backbone to target device
         self.model = self.model.to(self.device)
+
+    def _get_default_labels(self) -> List[str]:
+        """Load default class labels from config file."""
+        class_names_path = Path("configs/class_names.txt")
+        if class_names_path.exists():
+            with open(class_names_path, "r") as f:
+                return [line.strip() for line in f.readlines()]
+        
+        return ["person", "car", "truck", "dog", "cat", "bird", "bicycle", "chair", "table", "laptop"]
 
     # ------------------------------------------------------------------
     # Public API
@@ -182,7 +195,7 @@ class HubRetrainer:
     # Background worker
     # ------------------------------------------------------------------
 
-    def _retrain_background(
+def _retrain_background(
         self,
         embeddings: List,
         cluster_id: int,
@@ -190,30 +203,28 @@ class HubRetrainer:
         pseudo_labels: Optional[List[Optional[str]]] = None,
     ):
         """
-        Background thread: fine-tune the hub backbone, then submit to FedAvg.
+        Background thread: fine-tune hub ViT+LoRA, then submit to FedAvg.
 
-        Loss strategy
-        -------------
-        • **Supervised** (pseudo_labels available with ≥ 2 distinct classes):
-          Compute a per-class centroid from the raw CLIP embeddings.
-          Train the backbone to map each embedding toward its class centroid
-          (MSE in embedding space = metric/prototype learning).
-
-        • **Unsupervised** (single class or no labels):
-          Train the backbone to preserve cosine similarity with the original
-          CLIP embedding (self-supervised feature alignment).
+        Training strategy (LoRA-based):
+        • Uses PEFT-wrapped ViT model (set in hub_server)
+        • Maps CLIP embeddings to ViT feature space
+        • Trains LoRA adapter with cross-entropy loss on pseudo-labels
+        • Extracts only LoRA weights for FedAvg (not full model)
         """
         global _retraining_in_progress
         try:
             start_msg = (
-                f"[HubRetrainer] ▶ Starting retrain — "
+                f"[HubRetrainer] ▶ Starting LoRA retrain — "
                 f"cluster={cluster_id}, samples={len(embeddings)}"
             )
             logger.warning(start_msg)
             print(start_msg, flush=True)
             t0 = time.time()
 
-            # ── 1. Normalise embeddings to tensors ─────────────────────
+            # ── 1. Use stored class names ────────────────────────────────
+            label_to_idx = {name.lower(): i for i, name in enumerate(self._class_names)}
+
+            # ── 2. Prepare embeddings and labels ───────────────────
             processed = []
             for e in embeddings:
                 if isinstance(e, np.ndarray):
@@ -222,90 +233,90 @@ class HubRetrainer:
                     t = e.float()
                 processed.append(t.squeeze().to(self.device))
 
-            X = torch.stack(processed)  # (N, embedding_dim)
+            X = torch.stack(processed)  # (N, embedding_dim=512)
 
-            # ── 2. Set up optimiser ────────────────────────────────────
+            # Map pseudo-labels to class indices
+            valid_labels = pseudo_labels or []
+            y = torch.zeros(len(X), dtype=torch.long)
+            for i, label in enumerate(valid_labels):
+                if label:
+                    label_lower = label.lower()
+                    for name, idx in label_to_idx.items():
+                        if label_lower in name or name in label_lower:
+                            y[i] = idx
+                            break
+
+            # ── 3. Set up LoRA training ────────────────────────────
             self.model.train()
-            optimizer = optim.AdamW(self.model.parameters(), lr=1e-4, weight_decay=1e-5)
+            
+            # Only train LoRA parameters (not full ViT)
+            optimizer = optim.Adam(self.model.parameters(), lr=1e-4)
+            criterion = nn.CrossEntropyLoss()
 
-            # ── 3. Choose loss strategy ────────────────────────────────
-            valid_labels = [l for l in (pseudo_labels or []) if l]
-            unique_labels = list(
-                dict.fromkeys(valid_labels)
-            )  # preserve order, deduplicate
+            # Create data loader
+            dataset = TensorDataset(X, y)
+            loader = DataLoader(dataset, batch_size=min(8, len(X)), shuffle=True)
 
-            if len(unique_labels) >= 1 and len(valid_labels) == len(embeddings):
-                # ── Supervised: centroid metric learning ───────────────
-                logger.info(
-                    f"[HubRetrainer] Using supervised centroid loss "
-                    f"(classes={unique_labels})."
-                )
-                # Compute per-class centroids from raw CLIP embeddings (X)
-                centroids: dict = {}
-                for label in unique_labels:
-                    mask = torch.tensor(
-                        [l == label for l in (pseudo_labels or [])],
-                        dtype=torch.bool,
-                        device=self.device,
+            logger.info(
+                f"[HubRetrainer] Training LoRA with {len(self._class_names)} classes, "
+                f"{len(valid_labels)} labeled samples"
+            )
+
+            # ── 4. LoRA training loop ────────────────────────────────
+            for epoch in range(self.num_epochs):
+                epoch_loss = 0.0
+                num_batches = 0
+                for xb, yb in loader:
+                    optimizer.zero_grad()
+                    
+                    # Forward through ViT+LoRA
+                    outputs = self.model(xb)
+                    
+                    # Cross-entropy loss on LoRA-modified logits
+                    if hasattr(outputs, 'logits'):
+                        logits = outputs.logits
+                    else:
+                        logits = outputs
+                    
+                    loss = criterion(logits, yb)
+                    loss.backward()
+                    optimizer.step()
+                    
+                    epoch_loss += loss.item()
+                    num_batches += 1
+
+                avg_loss = epoch_loss / max(num_batches, 1)
+                if (epoch + 1) % 5 == 0:
+                    logger.info(
+                        f"[HubRetrainer] LoRA epoch {epoch + 1}/{self.num_epochs}, "
+                        f"loss={avg_loss:.4f}"
                     )
-                    centroids[label] = X[mask].mean(dim=0).detach()
-
-                # Build target tensor: each embedding → its class centroid
-                targets = torch.stack(
-                    [centroids[l] for l in (pseudo_labels or [])]
-                )  # (N, embedding_dim)
-
-                dataset = TensorDataset(X, targets)
-                loader = DataLoader(dataset, batch_size=min(16, len(X)), shuffle=True)
-                criterion = nn.MSELoss()
-
-                for epoch in range(self.num_epochs):
-                    epoch_loss = 0.0
-                    for xb, yb in loader:
-                        optimizer.zero_grad()
-                        out = self.model(xb)
-                        loss = criterion(out, yb)
-                        loss.backward()
-                        optimizer.step()
-                        epoch_loss += loss.item()
-                    if (epoch + 1) % 5 == 0:
-                        logger.debug(
-                            f"[HubRetrainer] Supervised epoch "
-                            f"{epoch + 1}/{self.num_epochs} "
-                            f"loss={epoch_loss / len(loader):.6f}"
-                        )
-
-            else:
-                # ── Unsupervised: cosine-similarity preservation ────────
-                logger.info("[HubRetrainer] Using unsupervised cosine-alignment loss.")
-                dataset = TensorDataset(X)
-                loader = DataLoader(dataset, batch_size=min(16, len(X)), shuffle=True)
-
-                for epoch in range(self.num_epochs):
-                    epoch_loss = 0.0
-                    for (xb,) in loader:
-                        optimizer.zero_grad()
-                        out = self.model(xb)
-                        # Maximise cosine similarity between backbone output
-                        # and original CLIP embedding
-                        cos_sim = nn.functional.cosine_similarity(out, xb)
-                        loss = (1.0 - cos_sim).mean()
-                        loss.backward()
-                        optimizer.step()
-                        epoch_loss += loss.item()
-                    if (epoch + 1) % 5 == 0:
-                        logger.debug(
-                            f"[HubRetrainer] Cosine epoch "
-                            f"{epoch + 1}/{self.num_epochs} "
-                            f"loss={epoch_loss / len(loader):.6f}"
-                        )
 
             self.model.eval()
 
-            # ── 4. Serialise the fine-tuned backbone and submit to FedAvg
+            # ── 5. Extract LoRA adapter weights only ───────────────────
+            # Use PEFT to get only LoRA weights, NOT full ViT
+            try:
+                from peft import get_peft_state_dict
+                adapter_state_dict = get_peft_state_dict(self.model)
+            except ImportError:
+                adapter_state_dict = {
+                    k: v for k, v in self.model.state_dict().items()
+                    if 'lora' in k.lower() or 'adapter' in k.lower()
+                }
+            
+            logger.info(
+                f"[HubRetrainer] Extracted {len(adapter_state_dict)} LoRA parameters"
+            )
+
+            # ── 6. Serialize and submit to FedAvg ────────────────────
             buf = io.BytesIO()
-            torch.save(self.model.state_dict(), buf)
+            torch.save(adapter_state_dict, buf)
             adapter_bytes = buf.getvalue()
+
+            logger.info(
+                f"[HubRetrainer] LoRA adapter size: {len(adapter_bytes)/1024:.1f} KB"
+            )
 
             submit_adapter(
                 device_id="hub",
@@ -317,15 +328,16 @@ class HubRetrainer:
             elapsed = time.time() - t0
 
             done_msg = (
-                f"[HubRetrainer] ✓ Retrain COMPLETE — "
+                f"[HubRetrainer] ✓ LoRA Retrain COMPLETE — "
                 f"cluster={cluster_id}, version={new_version}, "
-                f"elapsed={elapsed:.1f}s"
+                f"elapsed={elapsed:.1f}s, adapter_size={len(adapter_bytes)/1024:.1f}KB"
             )
             logger.warning(done_msg)
             print(done_msg, flush=True)
 
         except Exception as e:
-            logger.error(f"[HubRetrainer] Retrain failed: {e}", exc_info=True)
+            logger.error(f"[HubRetrainer] LoRA Retrain failed: {e}", exc_info=True)
+            print(f"[HubRetrainer] LoRA Retrain failed: {e}", flush=True)
         finally:
             with _retraining_lock:
                 _retraining_in_progress = False

@@ -47,6 +47,8 @@ from central_hub.moe_manager import MoEManager
 from central_hub.task_tracker import TaskTracker
 from monitoring.dashboard import dashboard
 from monitoring.dashboard import router as monitoring_router
+from peft import LoraConfig, get_peft_model
+from transformers import ViTForImageClassification
 
 logger = logging.getLogger(__name__)
 
@@ -75,11 +77,53 @@ async def lifespan(app: FastAPI):
 
     faiss_mgr = FaissManager(embedding_dim=embedding_dim)
     moe_mgr = MoEManager(embedding_dim=embedding_dim)
+
+    # Load ViT model for LoRA fine-tuning on hub
+    logger.info("[Hub] Loading ViT model for LoRA fine-tuning...")
+    try:
+        vit_model = ViTForImageClassification.from_pretrained(
+            "google/vit-base-patch16-224",
+            num_labels=50,
+        )
+        
+        weights_path = Path("../model/best_vit_model.pth")
+        if weights_path.exists():
+            try:
+                state_dict = torch.load(weights_path, map_location=device)
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    if k.startswith("module."):
+                        k = k[7:]
+                    new_state_dict[k] = v
+                vit_model.load_state_dict(new_state_dict, strict=False)
+                logger.info(f"[Hub] Loaded custom ViT weights from {weights_path}")
+            except Exception as e:
+                logger.warning(f"[Hub] Could not load custom weights: {e}, using pretrained")
+    except Exception as e:
+        logger.error(f"[Hub] Failed to load ViT: {e}")
+        vit_model = ViTForImageClassification.from_pretrained(
+            "google/vit-base-patch16-224",
+            num_labels=50,
+        )
+
+    # Wrap ViT with LoRA (matching edge config: r=8, alpha=16)
+    lora_config = LoraConfig(
+        r=8,
+        lora_alpha=16,
+        target_modules=["query", "key", "value", "dense"],
+        lora_dropout=0.1,
+        bias="none",
+        task_type="IMAGE_CLS",
+    )
+    vit_model = get_peft_model(vit_model, lora_config)
+    vit_model = vit_model.to(device)
+    logger.info(f"[Hub] ViT wrapped with LoRA (r=8, alpha=16)")
+
     retrainer = HubRetrainer(
-        model=moe_mgr.backbone,
+        model=vit_model,
         embedding_dim=embedding_dim,
         device=device,
-        min_samples=1,  # Trigger fine-tuning on first escalated embedding
+        min_samples=1,
     )
     task_tracker = TaskTracker()
 
