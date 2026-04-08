@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -9,6 +10,8 @@ from peft import LoraConfig, PeftModel, get_peft_model
 from PIL import Image
 from torchvision import transforms
 from transformers import CLIPModel, CLIPProcessor, ViTForImageClassification
+
+logger = logging.getLogger(__name__)
 
 
 class EdgeVisionNode:
