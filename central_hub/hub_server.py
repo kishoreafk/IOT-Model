@@ -84,6 +84,7 @@ async def lifespan(app: FastAPI):
         vit_model = ViTForImageClassification.from_pretrained(
             "google/vit-base-patch16-224",
             num_labels=50,
+            ignore_mismatched_sizes=True,
         )
         
         weights_path = Path("model/best_vit_model.pth")
@@ -110,6 +111,7 @@ async def lifespan(app: FastAPI):
         vit_model = ViTForImageClassification.from_pretrained(
             "google/vit-base-patch16-224",
             num_labels=50,
+            ignore_mismatched_sizes=True,
         )
 
     # Wrap ViT with LoRA (matching edge config: r=8, alpha=16)
