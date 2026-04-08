@@ -135,7 +135,6 @@ class SecureTransmitter:
             hashes.SHA256(),
         )
         sig_b64 = base64.b64encode(signature).decode("utf-8")
-        print(f"[Sign] Payload bytes: {len(payload)}, Signature length: {len(sig_b64)}")
         return sig_b64
 
     def _encrypt_payload(self, payload: Dict[str, Any]) -> str:
