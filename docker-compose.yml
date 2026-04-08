@@ -1,0 +1,94 @@
+version: "3.9"
+
+services:
+
+  hub:
+    build:
+      context: .
+      dockerfile: Dockerfile.hub
+    image: edge-hub:latest
+    container_name: edge_hub
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./keys:/app/keys:ro
+      - ./model:/app/model:ro
+      - ./configs:/app/configs:ro
+      - hub_faiss_data:/app/data
+    env_file: .env
+    environment:
+      - HUB_HOST=0.0.0.0
+      - HUB_PORT=8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+    networks:
+      - edge_net
+
+  edge_node:
+    build:
+      context: .
+      dockerfile: Dockerfile.edge
+    image: edge-node:latest
+    container_name: edge_node_01
+    depends_on:
+      hub:
+        condition: service_healthy
+    volumes:
+      - ./keys:/app/keys:ro
+      - ./configs:/app/configs:ro
+      - edge_lora:/app/edge_node/lora_adapter
+    env_file: .env
+    environment:
+      - HUB_URL=http://hub:8000
+      - DEVICE_ID=edge_node_01
+    restart: unless-stopped
+    networks:
+      - edge_net
+
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./dashboards/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    networks:
+      - edge_net
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./dashboards/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+      - ./dashboards/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - prometheus
+    networks:
+      - edge_net
+    restart: unless-stopped
+
+volumes:
+  hub_faiss_data:
+  edge_lora:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  edge_net:
+    driver: bridge

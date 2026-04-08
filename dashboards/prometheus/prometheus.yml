@@ -1,0 +1,9 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: 'edge-hub'
+    static_configs:
+      - targets: ['hub:8000']
+    metrics_path: '/monitoring/metrics'
