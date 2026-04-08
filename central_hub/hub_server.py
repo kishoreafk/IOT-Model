@@ -228,6 +228,11 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
             )
 
         elif trigger == "escalate_hub" and embedding_list:
+            logger.info(f"[Ingress] Received embedding_list length: {len(embedding_list)}")
+            
+            if len(embedding_list) != 512:
+                raise ValueError(f"Expected 512-dim embedding, got {len(embedding_list)}")
+            
             embedding = torch.tensor(embedding_list, dtype=torch.float32).unsqueeze(0)
 
             # Convert to numpy for FAISS

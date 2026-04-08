@@ -247,43 +247,19 @@ class EdgeVisionNode:
 
     def extract_features(self, image: Image.Image) -> torch.Tensor:
         """
-        Extract embedding features from the custom ViT model (or LoRA model).
-        Used for sending embeddings to hub for federated learning.
+        Extract CLIP embedding features from image for hub transmission.
+        CLIP provides 512-dim embeddings that match FAISS index.
         """
-        model = self.lora_model if self.lora_model else self.custom_vit
-        if model is None:
-            raise ValueError("No model available for feature extraction")
-
-        transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
-        img_tensor = transform(image).unsqueeze(0).to(self.device)
-        
-        if self.use_fp16:
-            img_tensor = img_tensor.half()
+        inputs = self.clip_processor(
+            images=image,
+            return_tensors="pt",
+        ).to(self.device)
 
         with torch.no_grad():
-            outputs = model(img_tensor)
-            if hasattr(outputs, 'pooler_output'):
-                features = outputs.pooler_output
-            elif hasattr(outputs, 'last_hidden_state'):
-                features = outputs.last_hidden_state[:, 0]
-            elif hasattr(outputs, 'logits'):
-                features = outputs.logits
-            else:
-                features = outputs
-            
-            if hasattr(features, 'detach'):
-                features = features.detach()
-            
-            if features.dim() > 1:
-                features = features / features.norm(dim=-1, keepdim=True)
+            image_features = self.clip_model.get_image_features(**inputs)
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
-        return features.squeeze()
+        return image_features.squeeze()
 
     def local_adaptation(
         self,
