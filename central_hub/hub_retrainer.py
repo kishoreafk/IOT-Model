@@ -37,6 +37,12 @@ _retraining_lock = threading.Lock()
 _retraining_in_progress = False
 
 
+def get_retraining_status() -> dict:
+    """Return current retraining state (safe to call from any thread)."""
+    with _retraining_lock:
+        return {"retraining_in_progress": _retraining_in_progress}
+
+
 class HubRetrainer:
     """
     Runs fine-tuning on the hub backbone using escalated CLIP embeddings
@@ -117,19 +123,23 @@ class HubRetrainer:
         global _retraining_in_progress
 
         if len(cluster_embeddings) < self.min_samples:
-            logger.info(
+            msg = (
                 f"[HubRetrainer] Cluster {cluster_id} has only "
-                f"{len(cluster_embeddings)} samples (min={self.min_samples}). "
-                "Retraining deferred."
+                f"{len(cluster_embeddings)} sample(s) "
+                f"(min={self.min_samples}). Retraining deferred."
             )
+            logger.warning(msg)
+            print(msg, flush=True)
             return False
 
         with _retraining_lock:
             if _retraining_in_progress:
-                logger.info(
+                msg = (
                     "[HubRetrainer] Retraining already in progress — "
-                    "new embeddings buffered."
+                    "new embeddings buffered for next cycle."
                 )
+                logger.warning(msg)
+                print(msg, flush=True)
                 return False
             _retraining_in_progress = True
 
@@ -146,11 +156,14 @@ class HubRetrainer:
             )
             thread.start()
             has_labels = bool(pseudo_labels and any(l for l in pseudo_labels if l))
-            logger.info(
-                f"[HubRetrainer] Retraining scheduled — cluster={cluster_id}, "
+            msg = (
+                f"[HubRetrainer] *** RETRAINING SCHEDULED *** "
+                f"cluster={cluster_id}, "
                 f"samples={len(cluster_embeddings)}, "
                 f"supervised={'yes' if has_labels else 'no (cosine fallback)'}."
             )
+            logger.warning(msg)
+            print(msg, flush=True)
             return True
         except Exception as e:
             logger.error(
@@ -159,6 +172,10 @@ class HubRetrainer:
             )
             with _retraining_lock:
                 _retraining_in_progress = False
+            print(
+                f"[HubRetrainer] Failed to start retraining thread: {e}",
+                flush=True,
+            )
             return False
 
     # ------------------------------------------------------------------
@@ -188,10 +205,12 @@ class HubRetrainer:
         """
         global _retraining_in_progress
         try:
-            logger.info(
+            start_msg = (
                 f"[HubRetrainer] ▶ Starting retrain — "
                 f"cluster={cluster_id}, samples={len(embeddings)}"
             )
+            logger.warning(start_msg)
+            print(start_msg, flush=True)
             t0 = time.time()
 
             # ── 1. Normalise embeddings to tensors ─────────────────────
@@ -297,11 +316,13 @@ class HubRetrainer:
             new_version = run_fedavg(min_participants=1)
             elapsed = time.time() - t0
 
-            logger.info(
-                f"[HubRetrainer] ✓ Retrain complete — "
+            done_msg = (
+                f"[HubRetrainer] ✓ Retrain COMPLETE — "
                 f"cluster={cluster_id}, version={new_version}, "
                 f"elapsed={elapsed:.1f}s"
             )
+            logger.warning(done_msg)
+            print(done_msg, flush=True)
 
         except Exception as e:
             logger.error(f"[HubRetrainer] Retrain failed: {e}", exc_info=True)

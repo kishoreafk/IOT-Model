@@ -25,7 +25,6 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-import asyncio
 import logging
 import time
 import uuid
@@ -50,6 +49,13 @@ from monitoring.dashboard import dashboard
 from monitoring.dashboard import router as monitoring_router
 
 logger = logging.getLogger(__name__)
+
+# ── Ensure application logs appear in the console regardless of uvicorn config ──
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)-8s [%(name)s] %(message)s",
+)
+logging.getLogger("central_hub").setLevel(logging.INFO)
 
 faiss_mgr: Optional[FaissManager] = None
 moe_mgr: Optional[MoEManager] = None
@@ -194,8 +200,17 @@ async def ingress_update(payload: IngressPayload, background: BackgroundTasks):
     }
 
 
-async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str):
-    """Background task: decrypt → route by trigger → FedAvg or retrain."""
+def _process_ingress(task_id: str, encrypted_payload: str, device_id: str):
+    """
+    Background task (sync, runs in FastAPI's threadpool): decrypt → route by
+    trigger → FedAvg or HubRetrainer.
+
+    Changed from async def to def so that FastAPI runs it in a thread-pool
+    executor rather than awaiting it on the event loop.  The function contains
+    nothing but blocking I/O (file reads, FAISS locking, threading.Thread) so
+    making it a coroutine only serialised all background processing on the loop
+    without any concurrency benefit.
+    """
     try:
         # Use lightweight decrypt utility (no transformers dependency)
         from central_hub.decrypt_utils import decrypt_payload
@@ -220,17 +235,43 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
             task_tracker.fail(task_id, f"Decryption failed: {str(e)}")
             return
 
-        trigger = decrypted.get("metadata", {}).get("trigger", "escalate_hub")
+        # ── Extract routing fields ───────────────────────────────────────
+        metadata = decrypted.get("metadata") or {}
+        trigger = metadata.get("trigger") or "escalate_hub"
         embedding_list = decrypted.get("embedding")
         adapter_b64 = decrypted.get("adapter_weights")
-        num_samples = decrypted.get("metadata", {}).get("num_samples", 1)
-        clip_pseudo_label = decrypted.get("metadata", {}).get("clip_pseudo_label")
+        num_samples = int(metadata.get("num_samples") or 1)
+        clip_pseudo_label = metadata.get("clip_pseudo_label")
 
+        # Always-visible diagnostics (print bypasses log-level filtering)
+        print(
+            f"[Ingress] device={device_id!r} trigger={trigger!r} "
+            f"has_embedding={bool(embedding_list)} "
+            f"embedding_len={len(embedding_list) if isinstance(embedding_list, list) else 'N/A'} "
+            f"has_adapter={bool(adapter_b64)}",
+            flush=True,
+        )
         logger.info(
-            f"[Ingress] Received trigger={trigger}, clip_pseudo_label={clip_pseudo_label}"
+            "[Ingress] device=%s trigger=%r has_embedding=%s has_adapter=%s",
+            device_id,
+            trigger,
+            bool(embedding_list),
+            bool(adapter_b64),
         )
 
-        if trigger == "adapt_local" and adapter_b64:
+        # ── Route by trigger (checked independently of payload completeness) ──
+        if trigger == "adapt_local":
+            if not adapter_b64:
+                error_msg = (
+                    f"adapt_local trigger from {device_id!r} but adapter_weights "
+                    f"is missing or empty. "
+                    f"Payload keys present: {list(decrypted.keys())}"
+                )
+                logger.error("[Ingress] %s", error_msg)
+                print(f"[Ingress] ERROR: {error_msg}", flush=True)
+                task_tracker.fail(task_id, error_msg)
+                return
+
             import base64
 
             try:
@@ -247,37 +288,53 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                         "stale_devices": stale,
                     },
                 )
-                logger.info(
-                    f"[Ingress] adapt_local from {device_id} → "
-                    f"FedAvg v{new_version}, {len(stale)} devices need sync."
+                logger.warning(
+                    "[Ingress] adapt_local from %s → FedAvg v%s, %d devices need sync.",
+                    device_id,
+                    new_version,
+                    len(stale),
+                )
+                print(
+                    f"[Ingress] adapt_local from {device_id!r} → FedAvg v{new_version}, "
+                    f"{len(stale)} devices need sync.",
+                    flush=True,
                 )
             except Exception as e:
                 logger.error(
-                    f"[Ingress] adapt_local processing failed for {device_id}: {e}",
+                    "[Ingress] adapt_local processing failed for %s: %s",
+                    device_id,
+                    e,
                     exc_info=True,
                 )
                 task_tracker.fail(task_id, f"adapt_local processing failed: {str(e)}")
                 return
 
-        elif trigger == "escalate_hub" and embedding_list:
-            try:
-                logger.info(
-                    f"[Ingress] Received embedding_list with type {type(embedding_list)}"
+        elif trigger == "escalate_hub":
+            # ── Guard: embedding field must be present and non-empty ────────
+            if not embedding_list:
+                error_msg = (
+                    f"escalate_hub trigger from {device_id!r} but 'embedding' field "
+                    f"is missing or empty "
+                    f"(type={type(embedding_list).__name__}, "
+                    f"payload_keys={list(decrypted.keys())}). "
+                    "Check that SecureTransmitter.transmit() includes the embedding."
                 )
+                logger.error("[Ingress] %s", error_msg)
+                print(f"[Ingress] ERROR: {error_msg}", flush=True)
+                task_tracker.fail(task_id, error_msg)
+                return
 
+            try:
                 embedding_array = np.array(embedding_list, dtype=np.float32)
-                logger.info(f"[Ingress] Embedding array shape: {embedding_array.shape}")
 
                 # Handle nested arrays (e.g., shape (1, 512))
                 if embedding_array.ndim == 2:
                     if embedding_array.shape[0] == 1:
-                        embedding_array = embedding_array[0]  # Squeeze first dimension
-                        logger.info(
-                            f"[Ingress] Squeezed embedding to shape: {embedding_array.shape}"
-                        )
+                        embedding_array = embedding_array[0]
                     else:
                         raise ValueError(
-                            f"Expected 1D or (1, 512) embedding, got shape {embedding_array.shape}"
+                            f"Expected 1-D or (1, 512) embedding, "
+                            f"got shape {embedding_array.shape}"
                         )
 
                 if embedding_array.ndim != 1 or len(embedding_array) != 512:
@@ -289,13 +346,28 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                     embedding_array, dtype=torch.float32
                 ).unsqueeze(0)
 
-                # Convert to numpy for FAISS — store pseudo_label alongside embedding
+                # Store in FAISS index
                 embedding_np = embedding.numpy()
                 cluster_id, total = faiss_mgr.add(
                     embedding_np, device_id, pseudo_label=clip_pseudo_label
                 )
                 cluster_embeddings = faiss_mgr.get_cluster_embeddings(cluster_id)
                 cluster_pseudo_labels = faiss_mgr.get_cluster_pseudo_labels(cluster_id)
+
+                print(
+                    f"[Ingress] escalate_hub from {device_id!r}: "
+                    f"cluster={cluster_id}, cluster_size={len(cluster_embeddings)}, "
+                    f"total_in_index={total} → calling maybe_retrain ...",
+                    flush=True,
+                )
+                logger.info(
+                    "[Ingress] escalate_hub from %s: cluster=%s, "
+                    "cluster_size=%d, total=%d → calling maybe_retrain",
+                    device_id,
+                    cluster_id,
+                    len(cluster_embeddings),
+                    total,
+                )
 
                 retraining_scheduled = retrainer.maybe_retrain(
                     cluster_embeddings=cluster_embeddings,
@@ -304,8 +376,13 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                     pseudo_labels=cluster_pseudo_labels,
                 )
 
-                # MoE expects torch tensor
-                moe_mgr.route(embedding)
+                # MoE routing (non-critical — errors here must not mask retrain result)
+                try:
+                    moe_mgr.route(embedding)
+                except Exception as moe_err:
+                    logger.warning(
+                        "[Ingress] MoE routing error (non-fatal): %s", moe_err
+                    )
 
                 task_tracker.complete(
                     task_id,
@@ -317,27 +394,58 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                         "retraining_scheduled": retraining_scheduled,
                     },
                 )
-                logger.info(
-                    f"[Ingress] escalate_hub from {device_id} → "
-                    f"cluster={cluster_id}, cluster_size={len(cluster_embeddings)}, "
-                    f"total_embeddings={total}, retraining_scheduled={retraining_scheduled}"
+
+                # Always-visible result line
+                print(
+                    f"[Ingress] escalate_hub COMPLETE: device={device_id!r} "
+                    f"retraining_scheduled={retraining_scheduled} "
+                    f"cluster={cluster_id} total_embeddings={total}",
+                    flush=True,
                 )
+                logger.warning(
+                    "[Ingress] escalate_hub from %s → cluster=%s, "
+                    "cluster_size=%d, total_embeddings=%d, retraining_scheduled=%s",
+                    device_id,
+                    cluster_id,
+                    len(cluster_embeddings),
+                    total,
+                    retraining_scheduled,
+                )
+
             except ValueError as e:
                 logger.error(
-                    f"[Ingress] Embedding validation failed for {device_id}: {e}"
+                    "[Ingress] Embedding validation failed for %s: %s", device_id, e
+                )
+                print(
+                    f"[Ingress] Embedding validation FAILED for {device_id!r}: {e}",
+                    flush=True,
                 )
                 task_tracker.fail(task_id, f"Embedding validation failed: {str(e)}")
                 return
             except Exception as e:
                 logger.error(
-                    f"[Ingress] escalate_hub processing failed for {device_id}: {e}",
+                    "[Ingress] escalate_hub processing failed for %s: %s",
+                    device_id,
+                    e,
                     exc_info=True,
+                )
+                print(
+                    f"[Ingress] escalate_hub FAILED for {device_id!r}: {e}",
+                    flush=True,
                 )
                 task_tracker.fail(task_id, f"escalate_hub processing failed: {str(e)}")
                 return
+
         else:
-            error_msg = f"Unknown trigger '{trigger}' or missing payload fields (embedding_list={embedding_list is not None}, adapter_b64={adapter_b64 is not None})"
-            logger.error(f"[Ingress] {error_msg}")
+            # Unknown trigger — give a precise error rather than a misleading
+            # "missing payload fields" message.
+            error_msg = (
+                f"Unknown trigger={trigger!r} from device {device_id!r}. "
+                f"Valid values: 'adapt_local', 'escalate_hub'. "
+                f"Payload top-level keys: {list(decrypted.keys())}"
+            )
+            logger.error("[Ingress] %s", error_msg)
+            print(f"[Ingress] ERROR: {error_msg}", flush=True)
             task_tracker.fail(task_id, error_msg)
             return
 
@@ -359,6 +467,45 @@ async def status():
         "global_adapter_version": get_global_adapter_meta()["version"],
         "timestamp": _now(),
     }
+
+
+@app.get("/hub/retraining/status")
+async def hub_retraining_status():
+    """
+    Return whether the hub backbone retraining thread is currently running.
+    Poll this endpoint to check if a previous escalate_hub triggered retraining.
+    """
+    import central_hub.hub_retrainer as _hr
+
+    with _hr._retraining_lock:
+        in_progress = _hr._retraining_in_progress
+    return {
+        "retraining_in_progress": in_progress,
+        "total_embeddings": faiss_mgr.total if faiss_mgr else 0,
+        "min_samples_threshold": retrainer.min_samples if retrainer else None,
+        "timestamp": _now(),
+    }
+
+
+@app.post("/hub/retraining/force-reset")
+async def hub_retraining_force_reset():
+    """
+    Force-reset the _retraining_in_progress flag to False.
+
+    Use only when the retrain daemon thread has died without resetting the flag
+    (e.g., after an OOM-kill, SIGKILL, or uvicorn --reload that kept the module
+    in memory).  Under normal operation the finally-block in _retrain_background
+    resets the flag automatically.
+    """
+    import central_hub.hub_retrainer as _hr
+
+    with _hr._retraining_lock:
+        previous = _hr._retraining_in_progress
+        _hr._retraining_in_progress = False
+    msg = f"Retraining flag reset to False (was {previous})"
+    logger.warning("[Hub] %s", msg)
+    print(f"[Hub] /hub/retraining/force-reset — {msg}", flush=True)
+    return {"reset": True, "previous_value": previous, "timestamp": _now()}
 
 
 @app.get("/clusters")
