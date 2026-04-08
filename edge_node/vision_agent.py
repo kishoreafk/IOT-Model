@@ -59,14 +59,15 @@ class EdgeVisionNode:
 
         self.clip_model.eval()
 
-        self.known_threshold = clip_config.get("thresholds", {}).get("known", 0.80)
-        self.adapt_threshold = clip_config.get("thresholds", {}).get("adapt", 0.50)
-
     def _init_custom_vit(self):
         """Initialize custom ViT model using HuggingFace transformers."""
         vit_config = self.config.get("custom_vit", {})
         if not vit_config.get("enabled", True):
             return
+
+        vit_thresholds = vit_config.get("thresholds", {})
+        self.known_threshold = vit_thresholds.get("known", 0.85)
+        self.adapt_threshold = vit_thresholds.get("adapt", 0.60)
 
         architecture = vit_config.get("architecture", "vit_base_patch16_224")
         num_classes = vit_config.get("num_classes", 50)
@@ -117,23 +118,82 @@ class EdgeVisionNode:
             except Exception as e:
                 print(f"Warning: Could not load adapter: {e}")
 
-    def detect_novelty(
+    def run_inference(
         self,
         image: Image.Image,
         candidate_labels: Optional[List[str]] = None,
-    ) -> Tuple[str, List[float], List[str]]:
+    ) -> Tuple[str, List[float], List[str], Optional[str]]:
         """
-        Perform zero-shot novelty detection using CLIP.
-
+        Run inference on custom ViT model first.
+        If ViT is uncertain, use CLIP zero-shot to get pseudo-labels for fine-tuning.
+        
         Returns:
             decision: One of 'Known', 'Adapt_Local', 'Escalate_Hub'
             scores: Confidence scores for each label
             labels: Sorted labels by confidence
+            pseudo_label: The label suggested by CLIP when ViT is uncertain (None otherwise)
         """
         if candidate_labels is None:
             candidate_labels = self._get_default_labels()
 
-        # Get text features
+        model = self.lora_model if self.lora_model else self.custom_vit
+        if model is None:
+            raise ValueError("No model available for inference")
+
+        transform = transforms.Compose([
+            transforms.Resize(224),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        
+        img_tensor = transform(image).unsqueeze(0).to(self.device)
+        
+        if self.use_fp16:
+            img_tensor = img_tensor.half()
+
+        with torch.no_grad():
+            outputs = model(img_tensor)
+            if hasattr(outputs, 'logits'):
+                logits = outputs.logits
+            else:
+                logits = outputs
+            probs = torch.softmax(logits, dim=-1)
+            
+            top_prob, top_idx = probs.max(dim=-1)
+            vit_confidence = top_prob.item()
+            vit_label_idx = top_idx.item()
+
+        class_names = self._get_default_labels()
+        if vit_label_idx < len(class_names):
+            vit_label = class_names[vit_label_idx]
+        else:
+            vit_label = f"class_{vit_label_idx}"
+
+        vit_scores = probs[0].cpu().tolist()
+        vit_labels = class_names[:len(vit_scores)]
+
+        pseudo_label = None
+        
+        if vit_confidence >= self.known_threshold:
+            decision = "Known"
+        elif vit_confidence >= self.adapt_threshold:
+            decision = "Adapt_Local"
+        else:
+            decision = "Escalate_Hub"
+            pseudo_label = self._get_clip_zero_shot_label(image, candidate_labels)
+
+        return decision, vit_scores, vit_labels, pseudo_label
+
+    def _get_clip_zero_shot_label(
+        self,
+        image: Image.Image,
+        candidate_labels: List[str],
+    ) -> str:
+        """
+        Use CLIP for zero-shot classification when ViT is uncertain.
+        Returns the top predicted label from CLIP.
+        """
         text_inputs = self.clip_processor(
             text=candidate_labels,
             return_tensors="pt",
@@ -144,7 +204,6 @@ class EdgeVisionNode:
             text_features = self.clip_model.get_text_features(**text_inputs)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
             
-            # Get image features  
             image_inputs = self.clip_processor(
                 images=image,
                 return_tensors="pt",
@@ -153,27 +212,29 @@ class EdgeVisionNode:
             image_features = self.clip_model.get_image_features(**image_inputs)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
             
-            # Calculate similarity
             logits = (image_features @ text_features.T)
             probs = logits.softmax(dim=-1)
             
             top_prob, top_idx = probs.max(dim=-1)
-            top_prob_val = top_prob.item()
             top_label = candidate_labels[top_idx.item()]
 
-        scores = probs[0].cpu().tolist()
-        labels = [candidate_labels[i] for i in range(len(candidate_labels))]
-        sorted_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        labels = [labels[i] for i in sorted_indices]
-        scores = [scores[i] for i in sorted_indices]
+        return top_label
 
-        if top_prob_val > self.known_threshold:
-            decision = "Known"
-        elif top_prob_val > self.adapt_threshold:
-            decision = "Adapt_Local"
-        else:
-            decision = "Escalate_Hub"
-
+    def detect_novelty(
+        self,
+        image: Image.Image,
+        candidate_labels: Optional[List[str]] = None,
+    ) -> Tuple[str, List[float], List[str]]:
+        """
+        Legacy method - runs combined inference.
+        Now calls run_inference() internally.
+        
+        Returns:
+            decision: One of 'Known', 'Adapt_Local', 'Escalate_Hub'
+            scores: Confidence scores for each label
+            labels: Sorted labels by confidence
+        """
+        decision, scores, labels, _ = self.run_inference(image, candidate_labels)
         return decision, scores, labels
 
     def _get_default_labels(self) -> List[str]:
@@ -185,17 +246,44 @@ class EdgeVisionNode:
         return ["person", "car", "truck", "dog", "cat", "bird", "unknown"]
 
     def extract_features(self, image: Image.Image) -> torch.Tensor:
-        """Extract CLIP embedding features from image."""
-        inputs = self.clip_processor(
-            images=image,
-            return_tensors="pt",
-        ).to(self.device)
+        """
+        Extract embedding features from the custom ViT model (or LoRA model).
+        Used for sending embeddings to hub for federated learning.
+        """
+        model = self.lora_model if self.lora_model else self.custom_vit
+        if model is None:
+            raise ValueError("No model available for feature extraction")
+
+        transform = transforms.Compose([
+            transforms.Resize(224),
+            transforms.CenterCrop(224),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        
+        img_tensor = transform(image).unsqueeze(0).to(self.device)
+        
+        if self.use_fp16:
+            img_tensor = img_tensor.half()
 
         with torch.no_grad():
-            image_features = self.clip_model.get_image_features(**inputs)
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            outputs = model(img_tensor)
+            if hasattr(outputs, 'pooler_output'):
+                features = outputs.pooler_output
+            elif hasattr(outputs, 'last_hidden_state'):
+                features = outputs.last_hidden_state[:, 0]
+            elif hasattr(outputs, 'logits'):
+                features = outputs.logits
+            else:
+                features = outputs
+            
+            if hasattr(features, 'detach'):
+                features = features.detach()
+            
+            if features.dim() > 1:
+                features = features / features.norm(dim=-1, keepdim=True)
 
-        return image_features
+        return features.squeeze()
 
     def local_adaptation(
         self,

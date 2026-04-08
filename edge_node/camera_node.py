@@ -231,9 +231,9 @@ class LiveCameraNode:
             print("[LiveCameraNode] Camera released and windows closed.")
 
     async def _process_frame(self, pil_image: Image.Image, display_frame: np.ndarray):
-        """Run novelty detection and route to correct action."""
+        """Run inference and route to correct action."""
         try:
-            decision, scores, labels = self.vision_node.detect_novelty(
+            decision, scores, labels, pseudo_label = self.vision_node.run_inference(
                 pil_image, candidate_labels=self.candidate_labels
             )
         except Exception as e:
@@ -249,9 +249,11 @@ class LiveCameraNode:
         logger.debug(f"[{decision}] {top_label} ({top_score:.2%})")
 
         if decision == "Adapt_Local":
-            asyncio.create_task(self._handle_adapt_local(pil_image, top_label))
+            clip_pseudo_label = pseudo_label if pseudo_label else top_label
+            asyncio.create_task(self._handle_adapt_local(pil_image, clip_pseudo_label))
         elif decision == "Escalate_Hub":
-            asyncio.create_task(self._handle_escalate_hub(pil_image))
+            clip_pseudo_label = pseudo_label if pseudo_label else top_label
+            asyncio.create_task(self._handle_escalate_hub(pil_image, clip_pseudo_label))
 
     async def _handle_adapt_local(self, image: Image.Image, pseudo_label: str):
         """LoRA fine-tune on the edge device, then push adapter weights to hub."""
@@ -281,19 +283,20 @@ class LiveCameraNode:
         else:
             logger.warning(f"[Adapt_Local] Hub transmission failed: {result}")
 
-    async def _handle_escalate_hub(self, image: Image.Image):
-        """Extract CLIP embedding and send to hub for clustering and retraining."""
+    async def _handle_escalate_hub(self, image: Image.Image, clip_pseudo_label: str = None):
+        """Extract ViT embedding and send to hub for clustering and retraining."""
         logger.info("[Escalate_Hub] Sending embedding to hub for retraining…")
         try:
-            clip_embedding = self.vision_node.extract_features(image)
+            vit_embedding = self.vision_node.extract_features(image)
         except Exception as e:
             logger.error(f"[Escalate_Hub] Embedding extraction failed: {e}")
             return
 
         result = await self.transmitter.transmit(
-            clip_embedding,
+            vit_embedding,
             metadata={
                 "trigger": "escalate_hub",
+                "clip_pseudo_label": clip_pseudo_label,
                 "adapter_version": self.sync_client.local_version,
             },
             sign_payload=True,

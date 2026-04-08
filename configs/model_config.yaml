@@ -9,15 +9,15 @@ custom_vit:
   normalization:
     mean: [0.485, 0.456, 0.406]
     std:  [0.229, 0.224, 0.225]
+  thresholds:
+    known: 0.85
+    adapt: 0.60
 
 clip:
   enabled: true
   model_name: "openai/clip-vit-base-patch32"
   source: "huggingface"
   embedding_dim: 512
-  thresholds:
-    known: 0.80
-    adapt: 0.50
 
 lora:
   enabled: true

@@ -203,6 +203,9 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
         embedding_list = decrypted.get("embedding")
         adapter_b64 = decrypted.get("adapter_weights")
         num_samples = decrypted.get("metadata", {}).get("num_samples", 1)
+        clip_pseudo_label = decrypted.get("metadata", {}).get("clip_pseudo_label")
+        
+        logger.info(f"[Ingress] Received trigger={trigger}, clip_pseudo_label={clip_pseudo_label}")
 
         if trigger == "adapt_local" and adapter_b64:
             import base64

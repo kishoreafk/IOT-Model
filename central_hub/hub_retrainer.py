@@ -63,7 +63,7 @@ class HubRetrainer:
         lora_rank: int = 8,
         lora_alpha: float = 16.0,
         num_epochs: int = 20,
-        min_samples: int = 5,
+        min_samples: int = 2,
         device: str = "cpu",
     ):
         self.model = model
