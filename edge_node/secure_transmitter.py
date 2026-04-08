@@ -139,7 +139,8 @@ class SecureTransmitter:
 
     def _encrypt_payload(self, payload: Dict[str, Any]) -> str:
         """Encrypt payload with Fernet."""
-        payload_bytes = json.dumps(payload).encode("utf-8")
+        # Use sort_keys=True for consistent serialization (required for signature verification)
+        payload_bytes = json.dumps(payload, sort_keys=True).encode("utf-8")
         encrypted = self.fernet.encrypt(payload_bytes)
 
         return base64.b64encode(encrypted).decode("utf-8")
