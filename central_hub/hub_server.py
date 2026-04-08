@@ -94,9 +94,15 @@ async def lifespan(app: FastAPI):
                 for k, v in state_dict.items():
                     if k.startswith("module."):
                         k = k[7:]
-                    new_state_dict[k] = v
-                vit_model.load_state_dict(new_state_dict, strict=False)
-                logger.info(f"[Hub] Loaded custom ViT weights from {weights_path}")
+                    # Only load backbone weights, skip classifier (has 1000 classes vs 50)
+                    if "classifier" not in k and "lm_head" not in k:
+                        new_state_dict[k] = v
+                
+                if new_state_dict:
+                    vit_model.load_state_dict(new_state_dict, strict=False)
+                    logger.info(f"[Hub] Loaded custom ViT BACKBONE weights from {weights_path}")
+                else:
+                    logger.warning(f"[Hub] No matching backbone weights in {weights_path}")
             except Exception as e:
                 logger.warning(f"[Hub] Could not load custom weights: {e}, using pretrained")
     except Exception as e:
