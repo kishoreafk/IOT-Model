@@ -202,8 +202,22 @@ class AdapterSyncClient:
             
             # If not loaded (projection layer adapter), apply as custom classifier
             if not loaded:
-                self.vision_node.hub_projection = state_dict
-                logger.warning("[AdapterSync] Loaded hub projection (embedding→class)")
+                import torch.nn as nn
+                num_classes = 50
+                if isinstance(loaded_data, dict) and "num_classes" in loaded_data:
+                    num_classes = loaded_data["num_classes"]
+                
+                proj_layer = nn.Linear(512, num_classes).to(self.vision_node.device)
+                try:
+                    proj_layer.load_state_dict(state_dict, strict=True)
+                    if getattr(self.vision_node, 'use_fp16', False):
+                        proj_layer = proj_layer.half()
+                    proj_layer.eval()
+                    self.vision_node.hub_projection = proj_layer
+                    logger.warning(f"[AdapterSync] Loaded hub projection (512→{num_classes})")
+                except Exception as e:
+                    logger.error(f"[AdapterSync] Failed to apply hub projection: {e}")
+                    raise
 
             old_version = self.local_version
             self.local_version = new_version

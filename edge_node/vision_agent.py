@@ -156,10 +156,20 @@ class EdgeVisionNode:
                 )
                 
                 with torch.no_grad():
-                    proj_layer = nn.Linear(512, len(projection_classes)).to(self.device)
-                    proj_layer.load_state_dict(self.hub_projection, strict=False)
-                    proj_layer.eval()
-                    
+                    if isinstance(self.hub_projection, dict):
+                        # Legacy/fallback behavior
+                        proj_layer = nn.Linear(512, len(projection_classes)).to(self.device)
+                        proj_layer.load_state_dict(self.hub_projection, strict=False)
+                        if self.use_fp16:
+                            proj_layer = proj_layer.half()
+                        proj_layer.eval()
+                        self.hub_projection = proj_layer  # Cache it
+                    else:
+                        proj_layer = self.hub_projection
+                        
+                    if self.use_fp16:
+                        clip_embedding = clip_embedding.half()
+                        
                     logits = proj_layer(clip_embedding)
                     probs = torch.softmax(logits, dim=-1)
                     
