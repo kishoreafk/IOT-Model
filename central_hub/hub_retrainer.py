@@ -195,7 +195,7 @@ class HubRetrainer:
     # Background worker
     # ------------------------------------------------------------------
 
-def _retrain_background(
+    def _retrain_background(
         self,
         embeddings: List,
         cluster_id: int,
