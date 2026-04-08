@@ -1,19 +1,19 @@
 import base64
 import hashlib
+import io
 import json
 import os
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
 import httpx
 import torch
 from cryptography.fernet import Fernet
+from cryptography.hazmat.backends import default_backend
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
-from cryptography.hazmat.backends import default_backend
-
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -35,16 +35,16 @@ class SecureTransmitter:
         retry_backoff: Optional[list] = None,
     ):
         self.adapter_weights_path = adapter_weights_path
-        
+
         # Load hub URL from environment if not explicitly provided
         if hub_url is None:
             hub_url = os.getenv("HUB_URL", "http://localhost:8000")
-            
+
         self.hub_url = hub_url.rstrip("/")
         self.device_id = device_id
         self.retry_attempts = retry_attempts
         self.retry_backoff = retry_backoff or [1, 3, 9]
-        
+
         # Store key paths for registration
         self.key_path = key_path
         self.private_key_path = private_key_path
@@ -169,10 +169,9 @@ class SecureTransmitter:
         if os.path.exists(self.adapter_weights_path):
             try:
                 state_dict = torch.load(self.adapter_weights_path, map_location="cpu")
-                adapter_weights = {
-                    k: v.cpu().tolist() if torch.is_tensor(v) else v
-                    for k, v in state_dict.items()
-                }
+                buf = io.BytesIO()
+                torch.save(state_dict, buf)
+                adapter_weights = base64.b64encode(buf.getvalue()).decode("utf-8")
             except Exception:
                 pass
 
@@ -223,7 +222,11 @@ class SecureTransmitter:
 
                 except httpx.ConnectError as e:
                     if attempt < self.retry_attempts - 1:
-                        wait_time = self.retry_backoff[attempt] if attempt < len(self.retry_backoff) else self.retry_backoff[-1]
+                        wait_time = (
+                            self.retry_backoff[attempt]
+                            if attempt < len(self.retry_backoff)
+                            else self.retry_backoff[-1]
+                        )
                         print(f"Connection failed, retrying in {wait_time}s...")
                         time.sleep(wait_time)
                     else:
@@ -234,7 +237,12 @@ class SecureTransmitter:
 
                 except Exception as e:
                     import traceback
-                    error_msg = str(e) if str(e) else f"{type(e).__name__}: {traceback.format_exc()}"
+
+                    error_msg = (
+                        str(e)
+                        if str(e)
+                        else f"{type(e).__name__}: {traceback.format_exc()}"
+                    )
                     return {
                         "success": False,
                         "error": error_msg,
@@ -245,7 +253,9 @@ class SecureTransmitter:
             "error": "Max retries exceeded",
         }
 
-    async def poll_task(self, task_id: str, max_polls: int = 10, poll_interval: float = 1.5) -> Dict[str, Any]:
+    async def poll_task(
+        self, task_id: str, max_polls: int = 10, poll_interval: float = 1.5
+    ) -> Dict[str, Any]:
         """Poll task completion from hub."""
         async with httpx.AsyncClient(timeout=30.0) as client:
             for _ in range(max_polls):
@@ -336,11 +346,12 @@ async def main():
     )
 
     print(f"Transmission success: {result['success']}")
-    if result.get('hub_response'):
+    if result.get("hub_response"):
         print(f"Cluster assigned: {result['hub_response'].get('cluster_id')}")
         print(f"Task ID: {result['hub_response'].get('task_id')}")
 
 
 if __name__ == "__main__":
     import asyncio
+
     asyncio.run(main())

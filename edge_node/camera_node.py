@@ -11,9 +11,8 @@ from typing import Optional
 import cv2
 import numpy as np
 import torch
-from PIL import Image
-
 from dotenv import load_dotenv
+from PIL import Image
 
 # Load environment variables from .env file
 load_dotenv()
@@ -23,9 +22,9 @@ import logging
 import time
 import uuid
 
-from edge_node.vision_agent import EdgeVisionNode
-from edge_node.secure_transmitter import SecureTransmitter
 from edge_node.adapter_sync import AdapterSyncClient
+from edge_node.secure_transmitter import SecureTransmitter
+from edge_node.vision_agent import EdgeVisionNode
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +59,9 @@ class LiveCameraNode:
         inference_interval: float = float(os.getenv("INFERENCE_INTERVAL", "0.5")),
         candidate_labels: Optional[list] = None,
         key_path: str = os.getenv("EDGE_ENCRYPTION_KEY_PATH", "keys/encryption.key"),
-        private_key_path: str = os.getenv("EDGE_PRIVATE_KEY_PATH", "keys/private_key.pem"),
+        private_key_path: str = os.getenv(
+            "EDGE_PRIVATE_KEY_PATH", "keys/private_key.pem"
+        ),
         public_key_path: str = os.getenv("EDGE_PUBLIC_KEY_PATH", "keys/public_key.pem"),
         adapter_poll_interval: int = int(os.getenv("ADAPTER_POLL_INTERVAL", "30")),
         device: str = os.getenv("DEVICE", "auto"),
@@ -71,8 +72,16 @@ class LiveCameraNode:
         self.camera_index = camera_index
         self.inference_interval = inference_interval
         self.candidate_labels = candidate_labels or [
-            "car", "truck", "person", "bicycle", "dog",
-            "cat", "chair", "table", "phone", "laptop",
+            "car",
+            "truck",
+            "person",
+            "bicycle",
+            "dog",
+            "cat",
+            "chair",
+            "table",
+            "phone",
+            "laptop",
         ]
         self.adapter_poll_interval = adapter_poll_interval
         self._last_inference_time = 0.0
@@ -110,7 +119,7 @@ class LiveCameraNode:
                 return loop.create_task(self._run())
         except RuntimeError:
             pass
-        
+
         asyncio.run(self._run())
 
     def stop(self):
@@ -130,7 +139,7 @@ class LiveCameraNode:
             print("[LiveCameraNode] Skipping hub registration (--no-hub mode)")
 
         print(f"[LiveCameraNode] Opening camera {self.camera_index}...")
-        
+
         # Try multiple backends
         cap = None
         for backend in [cv2.CAP_DSHOW, cv2.CAP_MSMF, cv2.CAP_ANY]:
@@ -140,18 +149,18 @@ class LiveCameraNode:
                 break
             if cap:
                 cap.release()
-        
+
         if not cap or not cap.isOpened():
             print(f"[ERROR] Cannot open camera index {self.camera_index}")
             print("Available camera indices to try: 0, 1, 2")
             raise RuntimeError(f"Cannot open camera index {self.camera_index}")
-        
+
         # Set camera properties
         cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         cap.set(cv2.CAP_PROP_FPS, 30)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        
+
         print(f"[LiveCameraNode] Camera {self.camera_index} opened successfully!")
         print("[LiveCameraNode] Press 'q' in the window to quit")
 
@@ -173,42 +182,54 @@ class LiveCameraNode:
 
                 frame_count += 1
                 if frame_count == 1:
-                    print(f"[LiveCameraNode] First frame captured! Resolution: {bgr_frame.shape[1]}x{bgr_frame.shape[0]}")
+                    print(
+                        f"[LiveCameraNode] First frame captured! Resolution: {bgr_frame.shape[1]}x{bgr_frame.shape[0]}"
+                    )
 
                 now = time.monotonic()
-                should_run_inference = now - self._last_inference_time >= self.inference_interval
-                
+                should_run_inference = (
+                    now - self._last_inference_time >= self.inference_interval
+                )
+
                 if should_run_inference:
                     self._last_inference_time = now
                     rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
                     pil_image = Image.fromarray(rgb)
-                    
+
                     try:
-                        decision, scores, labels = self.vision_node.detect_novelty(
-                            pil_image, candidate_labels=self.candidate_labels
+                        decision, scores, labels, pseudo_label = (
+                            self.vision_node.run_inference(
+                                pil_image, candidate_labels=self.candidate_labels
+                            )
                         )
-                        
+
                         top_label = labels[0] if labels else "unknown"
                         top_score = scores[0] if scores else 0.0
-                        
+
                         self._draw_hud(bgr_frame, decision, top_label, top_score)
                         print(f"[{decision}] {top_label} ({top_score:.1%})")
-                        
+
                         if decision == "Adapt_Local" and not self._skip_hub:
-                            asyncio.create_task(self._handle_adapt_local(pil_image, top_label))
+                            # Use CLIP pseudo-label if available, fall back to ViT label
+                            clip_label = pseudo_label if pseudo_label else top_label
+                            asyncio.create_task(
+                                self._handle_adapt_local(pil_image, clip_label)
+                            )
                         elif decision == "Escalate_Hub" and not self._skip_hub:
-                            asyncio.create_task(self._handle_escalate_hub(pil_image))
+                            asyncio.create_task(
+                                self._handle_escalate_hub(pil_image, pseudo_label)
+                            )
                     except Exception as e:
                         print(f"[ERROR] Inference failed: {e}")
-                
+
                 cv2.imshow(window_name, bgr_frame)
-                
+
                 key = cv2.waitKey(1) & 0xFF
                 if key == ord("q"):
                     print("[LiveCameraNode] Quit requested")
                     self.stop()
                     break
-                
+
                 await asyncio.sleep(0.001)
 
         except KeyboardInterrupt:
@@ -216,6 +237,7 @@ class LiveCameraNode:
         except Exception as e:
             print(f"[ERROR] Camera loop error: {e}")
             import traceback
+
             traceback.print_exc()
         finally:
             self._running = False
@@ -283,7 +305,9 @@ class LiveCameraNode:
         else:
             logger.warning(f"[Adapt_Local] Hub transmission failed: {result}")
 
-    async def _handle_escalate_hub(self, image: Image.Image, clip_pseudo_label: str = None):
+    async def _handle_escalate_hub(
+        self, image: Image.Image, clip_pseudo_label: Optional[str] = None
+    ):
         """Extract ViT embedding and send to hub for clustering and retraining."""
         logger.info("[Escalate_Hub] Sending embedding to hub for retraining…")
         try:
@@ -304,7 +328,9 @@ class LiveCameraNode:
 
         if result.get("success"):
             task_id = result["hub_response"].get("task_id")
-            logger.info(f"[Escalate_Hub] Embedding sent. Hub will retrain. task_id={task_id}")
+            logger.info(
+                f"[Escalate_Hub] Embedding sent. Hub will retrain. task_id={task_id}"
+            )
         else:
             logger.warning(f"[Escalate_Hub] Hub transmission failed: {result}")
 
@@ -319,18 +345,16 @@ class LiveCameraNode:
         }
         try:
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.post(
-                    f"{self.hub_url}/devices/register", json=payload
-                )
+                r = await client.post(f"{self.hub_url}/devices/register", json=payload)
                 r.raise_for_status()
                 logger.info(f"[LiveCameraNode] Registered with hub: {r.json()}")
         except Exception as e:
-            logger.warning(f"[LiveCameraNode] Hub registration failed (will retry): {e}")
+            logger.warning(
+                f"[LiveCameraNode] Hub registration failed (will retry): {e}"
+            )
 
     @staticmethod
-    def _draw_hud(
-        frame: np.ndarray, decision: str, label: str, score: float
-    ):
+    def _draw_hud(frame: np.ndarray, decision: str, label: str, score: float):
         """Overlay inference results on the display frame."""
         color_map = {
             "Known": (0, 200, 0),
@@ -341,9 +365,16 @@ class LiveCameraNode:
 
         cv2.rectangle(frame, (0, 0), (frame.shape[1], 60), (20, 20, 20), -1)
         cv2.putText(
-            frame, f"{decision}  {label} ({score:.1%})",
-            (10, 38), cv2.FONT_HERSHEY_DUPLEX, 0.9, color, 2,
+            frame,
+            f"{decision}  {label} ({score:.1%})",
+            (10, 38),
+            cv2.FONT_HERSHEY_DUPLEX,
+            0.9,
+            color,
+            2,
         )
+
+
 if __name__ == "__main__":
     node = LiveCameraNode()
     node.run()

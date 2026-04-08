@@ -1,9 +1,10 @@
-import numpy as np
-import faiss
-from typing import List, Dict, Any, Optional, Tuple
-import threading
-import pickle
 import os
+import pickle
+import threading
+from typing import Any, Dict, List, Optional, Tuple
+
+import faiss
+import numpy as np
 
 
 class FaissManager:
@@ -40,7 +41,9 @@ class FaissManager:
 
         self.index = faiss.IndexIDMap(self.index)
 
-    def add(self, embeddings: np.ndarray, device_id: str) -> Tuple[int, int]:
+    def add(
+        self, embeddings: np.ndarray, device_id: str, pseudo_label: Optional[str] = None
+    ) -> Tuple[int, int]:
         """
         Add embeddings to index and return cluster_id and total count.
         """
@@ -54,7 +57,7 @@ class FaissManager:
             ids = list(range(start_id, start_id + len(embeddings)))
 
             self.index.add_with_ids(embeddings, np.array(ids))
-            
+
             # Store raw embeddings for retrieval
             for i in range(len(embeddings)):
                 self._raw_embeddings.append(embeddings[i].copy())
@@ -62,6 +65,7 @@ class FaissManager:
             metadata = {
                 "device_id": device_id,
                 "embedding_id": start_id,
+                "pseudo_label": pseudo_label,
             }
             self.embedding_metadata.append(metadata)
 
@@ -81,7 +85,9 @@ class FaissManager:
         device_ids: Optional[List[str]] = None,
     ) -> List[int]:
         if embeddings.shape[1] != self.embedding_dim:
-            raise ValueError(f"Embedding dim {embeddings.shape[1]} != expected {self.embedding_dim}")
+            raise ValueError(
+                f"Embedding dim {embeddings.shape[1]} != expected {self.embedding_dim}"
+            )
 
         embeddings = self._normalize(embeddings)
 
@@ -90,7 +96,7 @@ class FaissManager:
             ids = list(range(start_id, start_id + len(embeddings)))
 
             self.index.add_with_ids(embeddings, np.array(ids))
-            
+
             # Store raw embeddings for retrieval
             for i in range(len(embeddings)):
                 self._raw_embeddings.append(embeddings[i].copy())
@@ -127,16 +133,43 @@ class FaissManager:
         with self._lock:
             if self.total == 0 or len(self._raw_embeddings) == 0:
                 return []
-            
+
             # If using actual clustering, filter by cluster_id
-            if hasattr(self, 'cluster_labels') and self.cluster_labels is not None and len(self.cluster_labels) > 0:
+            if (
+                hasattr(self, "cluster_labels")
+                and self.cluster_labels is not None
+                and len(self.cluster_labels) > 0
+            ):
                 indices = np.where(self.cluster_labels == cluster_id)[0]
-                cluster_embeddings = [self._raw_embeddings[i] for i in indices if i < len(self._raw_embeddings)]
+                cluster_embeddings = [
+                    self._raw_embeddings[i]
+                    for i in indices
+                    if i < len(self._raw_embeddings)
+                ]
                 if cluster_embeddings:
                     return cluster_embeddings
-            
+
             # For flat index or no clustering labels, return all embeddings
             return [emb for emb in self._raw_embeddings]
+
+    def get_cluster_pseudo_labels(self, cluster_id: int) -> List[Optional[str]]:
+        """Return the stored pseudo-labels for every embedding in a cluster."""
+        with self._lock:
+            if not self.embedding_metadata:
+                return []
+            if (
+                hasattr(self, "cluster_labels")
+                and self.cluster_labels is not None
+                and len(self.cluster_labels) > 0
+            ):
+                indices = np.where(self.cluster_labels == cluster_id)[0]
+                return [
+                    self.embedding_metadata[i].get("pseudo_label")
+                    for i in indices
+                    if i < len(self.embedding_metadata)
+                ]
+            # Flat index (no clustering): return labels for all stored embeddings
+            return [m.get("pseudo_label") for m in self.embedding_metadata]
 
     def get_cluster_summary(self) -> Dict[str, Any]:
         """Get summary of all clusters."""
@@ -147,7 +180,9 @@ class FaissManager:
                 "clusters": {
                     "0": {
                         "size": self.total,
-                        "entries": self.embedding_metadata[:10] if len(self.embedding_metadata) > 0 else [],
+                        "entries": self.embedding_metadata[:10]
+                        if len(self.embedding_metadata) > 0
+                        else [],
                     }
                 },
             }
@@ -183,11 +218,14 @@ class FaissManager:
                 faiss.write_index(self.index, self.persist_path + ".index")
 
                 with open(self.persist_path + ".meta", "wb") as f:
-                    pickle.dump({
-                        "metadata": self.embedding_metadata,
-                        "device_id_map": self.device_id_map,
-                        "cluster_labels": self.cluster_labels,
-                    }, f)
+                    pickle.dump(
+                        {
+                            "metadata": self.embedding_metadata,
+                            "device_id_map": self.device_id_map,
+                            "cluster_labels": self.cluster_labels,
+                        },
+                        f,
+                    )
 
     def load(self):
         if self.persist_path and os.path.exists(self.persist_path + ".index"):

@@ -19,6 +19,7 @@ New in this version:
 """
 
 import os
+
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -38,13 +39,15 @@ from fastapi import BackgroundTasks, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from central_hub.adapter_registry import router as registry_router, get_stale_devices
+from central_hub.adapter_registry import get_stale_devices
+from central_hub.adapter_registry import router as registry_router
 from central_hub.faiss_manager import FaissManager
-from central_hub.fed_avg import run_fedavg, submit_adapter, get_global_adapter_meta
+from central_hub.fed_avg import get_global_adapter_meta, run_fedavg, submit_adapter
 from central_hub.hub_retrainer import HubRetrainer
 from central_hub.moe_manager import MoEManager
 from central_hub.task_tracker import TaskTracker
-from monitoring.dashboard import dashboard, router as monitoring_router
+from monitoring.dashboard import dashboard
+from monitoring.dashboard import router as monitoring_router
 
 logger = logging.getLogger(__name__)
 
@@ -76,10 +79,12 @@ async def lifespan(app: FastAPI):
 
     Path("hub_data").mkdir(exist_ok=True)
     Path("data").mkdir(exist_ok=True)
-    
+
     # Auto-register test device for integration tests
-    from central_hub.adapter_registry import _devices, _registry_lock
     import time
+
+    from central_hub.adapter_registry import _devices, _registry_lock
+
     now = time.time()
     with _registry_lock:
         test_device_id = "test_device_001"
@@ -91,14 +96,14 @@ async def lifespan(app: FastAPI):
                 "registered_at": now,
             }
             logger.info(f"[Hub] Auto-registered test device: {test_device_id}")
-    
+
     # Expose globals for monitoring/dashboard access
     global faiss_mgr_global, moe_mgr_global, retrainer_global, task_tracker_global
     faiss_mgr_global = faiss_mgr
     moe_mgr_global = moe_mgr
     retrainer_global = retrainer
     task_tracker_global = task_tracker
-    
+
     logger.info("[Hub] All components initialised. Ready.")
 
     yield
@@ -194,6 +199,7 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
     try:
         # Use lightweight decrypt utility (no transformers dependency)
         from central_hub.decrypt_utils import decrypt_payload
+
         try:
             decrypted = decrypt_payload(
                 encrypted_payload,
@@ -201,11 +207,16 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                 public_key_path=os.getenv("HUB_PUBLIC_KEY_PATH", "keys/public_key.pem"),
             )
         except FileNotFoundError as e:
-            logger.error(f"[Ingress] Encryption key missing for device {device_id}: {e}")
+            logger.error(
+                f"[Ingress] Encryption key missing for device {device_id}: {e}"
+            )
             task_tracker.fail(task_id, f"Encryption key not found: {str(e)}")
             return
         except Exception as e:
-            logger.error(f"[Ingress] Decryption failed for device {device_id}: {e}", exc_info=True)
+            logger.error(
+                f"[Ingress] Decryption failed for device {device_id}: {e}",
+                exc_info=True,
+            )
             task_tracker.fail(task_id, f"Decryption failed: {str(e)}")
             return
 
@@ -214,11 +225,14 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
         adapter_b64 = decrypted.get("adapter_weights")
         num_samples = decrypted.get("metadata", {}).get("num_samples", 1)
         clip_pseudo_label = decrypted.get("metadata", {}).get("clip_pseudo_label")
-        
-        logger.info(f"[Ingress] Received trigger={trigger}, clip_pseudo_label={clip_pseudo_label}")
+
+        logger.info(
+            f"[Ingress] Received trigger={trigger}, clip_pseudo_label={clip_pseudo_label}"
+        )
 
         if trigger == "adapt_local" and adapter_b64:
             import base64
+
             try:
                 adapter_bytes = base64.b64decode(adapter_b64)
                 submit_adapter(device_id, adapter_bytes, num_samples=num_samples)
@@ -238,39 +252,56 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                     f"FedAvg v{new_version}, {len(stale)} devices need sync."
                 )
             except Exception as e:
-                logger.error(f"[Ingress] adapt_local processing failed for {device_id}: {e}", exc_info=True)
+                logger.error(
+                    f"[Ingress] adapt_local processing failed for {device_id}: {e}",
+                    exc_info=True,
+                )
                 task_tracker.fail(task_id, f"adapt_local processing failed: {str(e)}")
                 return
 
         elif trigger == "escalate_hub" and embedding_list:
             try:
-                logger.info(f"[Ingress] Received embedding_list with type {type(embedding_list)}")
-                
+                logger.info(
+                    f"[Ingress] Received embedding_list with type {type(embedding_list)}"
+                )
+
                 embedding_array = np.array(embedding_list, dtype=np.float32)
                 logger.info(f"[Ingress] Embedding array shape: {embedding_array.shape}")
-                
+
                 # Handle nested arrays (e.g., shape (1, 512))
                 if embedding_array.ndim == 2:
                     if embedding_array.shape[0] == 1:
                         embedding_array = embedding_array[0]  # Squeeze first dimension
-                        logger.info(f"[Ingress] Squeezed embedding to shape: {embedding_array.shape}")
+                        logger.info(
+                            f"[Ingress] Squeezed embedding to shape: {embedding_array.shape}"
+                        )
                     else:
-                        raise ValueError(f"Expected 1D or (1, 512) embedding, got shape {embedding_array.shape}")
-                
-                if embedding_array.ndim != 1 or len(embedding_array) != 512:
-                    raise ValueError(f"Expected 512-dim embedding, got shape {embedding_array.shape}")
-                
-                embedding = torch.tensor(embedding_array, dtype=torch.float32).unsqueeze(0)
+                        raise ValueError(
+                            f"Expected 1D or (1, 512) embedding, got shape {embedding_array.shape}"
+                        )
 
-                # Convert to numpy for FAISS
+                if embedding_array.ndim != 1 or len(embedding_array) != 512:
+                    raise ValueError(
+                        f"Expected 512-dim embedding, got shape {embedding_array.shape}"
+                    )
+
+                embedding = torch.tensor(
+                    embedding_array, dtype=torch.float32
+                ).unsqueeze(0)
+
+                # Convert to numpy for FAISS — store pseudo_label alongside embedding
                 embedding_np = embedding.numpy()
-                cluster_id, total = faiss_mgr.add(embedding_np, device_id)
+                cluster_id, total = faiss_mgr.add(
+                    embedding_np, device_id, pseudo_label=clip_pseudo_label
+                )
                 cluster_embeddings = faiss_mgr.get_cluster_embeddings(cluster_id)
+                cluster_pseudo_labels = faiss_mgr.get_cluster_pseudo_labels(cluster_id)
 
                 retraining_scheduled = retrainer.maybe_retrain(
                     cluster_embeddings=cluster_embeddings,
                     cluster_id=cluster_id,
                     num_samples_this_device=1,
+                    pseudo_labels=cluster_pseudo_labels,
                 )
 
                 # MoE expects torch tensor
@@ -283,7 +314,8 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                         "cluster_id": cluster_id,
                         "total_embeddings": total,
                         "cluster_size": len(cluster_embeddings),
-                        "retraining_scheduled": len(cluster_embeddings) >= retrainer.min_samples,
+                        "retraining_scheduled": len(cluster_embeddings)
+                        >= retrainer.min_samples,
                     },
                 )
                 logger.info(
@@ -292,11 +324,16 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
                     f"total_embeddings={total}, retraining_scheduled={len(cluster_embeddings) >= retrainer.min_samples}"
                 )
             except ValueError as e:
-                logger.error(f"[Ingress] Embedding validation failed for {device_id}: {e}")
+                logger.error(
+                    f"[Ingress] Embedding validation failed for {device_id}: {e}"
+                )
                 task_tracker.fail(task_id, f"Embedding validation failed: {str(e)}")
                 return
             except Exception as e:
-                logger.error(f"[Ingress] escalate_hub processing failed for {device_id}: {e}", exc_info=True)
+                logger.error(
+                    f"[Ingress] escalate_hub processing failed for {device_id}: {e}",
+                    exc_info=True,
+                )
                 task_tracker.fail(task_id, f"escalate_hub processing failed: {str(e)}")
                 return
         else:
@@ -306,7 +343,10 @@ async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str)
             return
 
     except Exception as e:
-        logger.error(f"[Ingress] Unexpected error in task {task_id} from {device_id}: {e}", exc_info=True)
+        logger.error(
+            f"[Ingress] Unexpected error in task {task_id} from {device_id}: {e}",
+            exc_info=True,
+        )
         task_tracker.fail(task_id, f"Unexpected error: {str(e)}")
 
 
@@ -343,16 +383,18 @@ async def representation_gap(cluster_threshold: int = 10):
 
 @app.get("/fedavg/status")
 async def fedavg_status():
-    from central_hub.fed_avg import get_global_adapter_meta, _pending_adapters
     import threading
-    _lock = getattr(_pending_adapters, '_lock', threading.Lock())
+
+    from central_hub.fed_avg import _pending_adapters, get_global_adapter_meta
+
+    _lock = getattr(_pending_adapters, "_lock", threading.Lock())
     with _lock:
         pending_count = len(_pending_adapters)
     return {
         "status": "operational",
         "global_version": get_global_adapter_meta()["version"],
         "pending_adapters": pending_count,
-        "global_checksum": get_global_adapter_meta()["checksum"]
+        "global_checksum": get_global_adapter_meta()["checksum"],
     }
 
 
@@ -360,14 +402,21 @@ async def fedavg_status():
 async def create_expert(cluster_id: Optional[int] = None):
     if faiss_mgr is None:
         raise HTTPException(status_code=503, detail="FAISS not ready.")
-    
+
     embeddings = faiss_mgr.get_cluster_embeddings(cluster_id or 0)
-    
+
     if not faiss_mgr.is_initialized or len(embeddings) == 0:
-        return {"status": "skipped", "reason": "FAISS not initialized or no embeddings", "cluster_id": cluster_id, "initialized": faiss_mgr.is_initialized if faiss_mgr else False}
-    
-    embeddings_np = np.array([e.cpu().numpy() if hasattr(e, 'cpu') else e for e in embeddings])
-    
+        return {
+            "status": "skipped",
+            "reason": "FAISS not initialized or no embeddings",
+            "cluster_id": cluster_id,
+            "initialized": faiss_mgr.is_initialized if faiss_mgr else False,
+        }
+
+    embeddings_np = np.array(
+        [e.cpu().numpy() if hasattr(e, "cpu") else e for e in embeddings]
+    )
+
     expert = moe_mgr.create_expert(embeddings_np, cluster_id)
     return {
         "status": "created",
@@ -401,9 +450,11 @@ async def reset():
 
 def _now() -> str:
     from datetime import datetime, timezone
+
     return datetime.now(timezone.utc).isoformat()
 
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8000)

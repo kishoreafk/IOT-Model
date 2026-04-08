@@ -1,13 +1,14 @@
 import os
-import yaml
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
 import torch
 import torch.nn as nn
+import yaml
+from peft import LoraConfig, PeftModel, get_peft_model
 from PIL import Image
-from typing import Tuple, List, Optional, Dict, Any
-from transformers import CLIPModel, CLIPProcessor, ViTForImageClassification
-from peft import LoraConfig, get_peft_model, PeftModel
 from torchvision import transforms
-import numpy as np
+from transformers import CLIPModel, CLIPProcessor, ViTForImageClassification
 
 
 class EdgeVisionNode:
@@ -111,8 +112,7 @@ class EdgeVisionNode:
         if not self.lora_model and self.custom_vit:
             try:
                 self.lora_model = PeftModel.from_pretrained(
-                    self.custom_vit,
-                    os.path.dirname(self.lora_adapter_path)
+                    self.custom_vit, os.path.dirname(self.lora_adapter_path)
                 )
                 self.lora_model.eval()
             except Exception as e:
@@ -126,7 +126,7 @@ class EdgeVisionNode:
         """
         Run inference on custom ViT model first.
         If ViT is uncertain, use CLIP zero-shot to get pseudo-labels for fine-tuning.
-        
+
         Returns:
             decision: One of 'Known', 'Adapt_Local', 'Escalate_Hub'
             scores: Confidence scores for each label
@@ -140,26 +140,30 @@ class EdgeVisionNode:
         if model is None:
             raise ValueError("No model available for inference")
 
-        transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        
+        transform = transforms.Compose(
+            [
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
+
         img_tensor = transform(image).unsqueeze(0).to(self.device)
-        
+
         if self.use_fp16:
             img_tensor = img_tensor.half()
 
         with torch.no_grad():
             outputs = model(img_tensor)
-            if hasattr(outputs, 'logits'):
+            if hasattr(outputs, "logits"):
                 logits = outputs.logits
             else:
                 logits = outputs
             probs = torch.softmax(logits, dim=-1)
-            
+
             top_prob, top_idx = probs.max(dim=-1)
             vit_confidence = top_prob.item()
             vit_label_idx = top_idx.item()
@@ -171,14 +175,16 @@ class EdgeVisionNode:
             vit_label = f"class_{vit_label_idx}"
 
         vit_scores = probs[0].cpu().tolist()
-        vit_labels = class_names[:len(vit_scores)]
+        vit_labels = class_names[: len(vit_scores)]
 
         pseudo_label = None
-        
+
         if vit_confidence >= self.known_threshold:
             decision = "Known"
         elif vit_confidence >= self.adapt_threshold:
             decision = "Adapt_Local"
+            # Use CLIP to get a reliable pseudo-label for local fine-tuning
+            pseudo_label = self._get_clip_zero_shot_label(image, candidate_labels)
         else:
             decision = "Escalate_Hub"
             pseudo_label = self._get_clip_zero_shot_label(image, candidate_labels)
@@ -203,18 +209,18 @@ class EdgeVisionNode:
         with torch.no_grad():
             text_features = self.clip_model.get_text_features(**text_inputs)
             text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            
+
             image_inputs = self.clip_processor(
                 images=image,
                 return_tensors="pt",
             ).to(self.device)
-            
+
             image_features = self.clip_model.get_image_features(**image_inputs)
             image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            
-            logits = (image_features @ text_features.T)
+
+            logits = image_features @ text_features.T
             probs = logits.softmax(dim=-1)
-            
+
             top_prob, top_idx = probs.max(dim=-1)
             top_label = candidate_labels[top_idx.item()]
 
@@ -228,7 +234,7 @@ class EdgeVisionNode:
         """
         Legacy method - runs combined inference.
         Now calls run_inference() internally.
-        
+
         Returns:
             decision: One of 'Known', 'Adapt_Local', 'Escalate_Hub'
             scores: Confidence scores for each label
@@ -279,8 +285,10 @@ class EdgeVisionNode:
             raise ValueError("Custom ViT not initialized")
 
         lora_config = self.config.get("lora", {})
-        target_modules = lora_config.get("target_modules", ["query", "key", "value", "dense"])
-        
+        target_modules = lora_config.get(
+            "target_modules", ["query", "key", "value", "dense"]
+        )
+
         peft_config = LoraConfig(
             r=lora_config.get("r", 8),
             lora_alpha=lora_config.get("alpha", 16),
@@ -297,12 +305,16 @@ class EdgeVisionNode:
 
         self.lora_model.train()
 
-        transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
+        transform = transforms.Compose(
+            [
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
 
         img_tensor = transform(image).unsqueeze(0).to(self.device)
 
@@ -311,17 +323,27 @@ class EdgeVisionNode:
 
         optimizer = torch.optim.Adam(self.lora_model.parameters(), lr=1e-4)
 
+        # Resolve pseudo_label to a class index
+        class_names = self._get_default_labels()
+        target_idx = 0  # fallback
+        if pseudo_label:
+            pseudo_lower = pseudo_label.lower()
+            for i, name in enumerate(class_names):
+                if pseudo_lower in name.lower() or name.lower() in pseudo_lower:
+                    target_idx = i
+                    break
+
         for epoch in range(num_epochs):
             optimizer.zero_grad()
             outputs = self.lora_model(img_tensor)
-            if hasattr(outputs, 'loss') and outputs.loss is not None:
+            if hasattr(outputs, "loss") and outputs.loss is not None:
                 loss = outputs.loss
-            elif hasattr(outputs, 'logits'):
+            elif hasattr(outputs, "logits"):
                 logits = outputs.logits
-                target = torch.tensor([0]).to(self.device)
+                target = torch.tensor([target_idx]).to(self.device)
                 loss = nn.functional.cross_entropy(logits, target)
             else:
-                target = torch.tensor([0]).to(self.device)
+                target = torch.tensor([target_idx]).to(self.device)
                 loss = nn.functional.cross_entropy(outputs, target)
             loss.backward()
             optimizer.step()
@@ -337,11 +359,11 @@ class EdgeVisionNode:
         self.lora_model.save_pretrained(os.path.dirname(self.lora_adapter_path))
 
         adapter_file = os.path.join(
-            os.path.dirname(self.lora_adapter_path),
-            "adapter_model.bin"
+            os.path.dirname(self.lora_adapter_path), "adapter_model.bin"
         )
         if os.path.exists(adapter_file) and self.lora_adapter_path != adapter_file:
             import shutil
+
             shutil.copy(adapter_file, self.lora_adapter_path)
 
     def get_adapter_weights(self) -> Optional[Dict[str, Any]]:
@@ -362,12 +384,16 @@ class EdgeVisionNode:
         if model is None:
             raise ValueError("No model available for classification")
 
-        transform = transforms.Compose([
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
+        transform = transforms.Compose(
+            [
+                transforms.Resize(224),
+                transforms.CenterCrop(224),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
 
         img_tensor = transform(image).unsqueeze(0).to(self.device)
 
@@ -377,7 +403,7 @@ class EdgeVisionNode:
         with torch.no_grad():
             outputs = model(img_tensor)
             # Handle both timm and transformers output formats
-            if hasattr(outputs, 'logits'):
+            if hasattr(outputs, "logits"):
                 logits = outputs.logits
             else:
                 logits = outputs
@@ -385,7 +411,11 @@ class EdgeVisionNode:
             top_prob, top_idx = probs.max(dim=-1)
 
         class_names = self._get_default_labels()
-        label = class_names[top_idx.item()] if top_idx.item() < len(class_names) else f"class_{top_idx.item()}"
+        label = (
+            class_names[top_idx.item()]
+            if top_idx.item() < len(class_names)
+            else f"class_{top_idx.item()}"
+        )
         confidence = top_prob.item()
 
         return label, confidence
