@@ -19,6 +19,7 @@ import threading
 import time
 from typing import List, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -136,9 +137,16 @@ class HubRetrainer:
             )
             t0 = time.time()
 
-            X = torch.stack(
-                [e.squeeze().to(self.device).float() for e in embeddings]
-            )
+            # Convert embeddings to torch tensors if they're numpy arrays
+            processed_embeddings = []
+            for e in embeddings:
+                if isinstance(e, np.ndarray):
+                    t = torch.from_numpy(e).float()
+                else:
+                    t = e.float()
+                processed_embeddings.append(t.squeeze().to(self.device))
+            
+            X = torch.stack(processed_embeddings)
 
             dataset = TensorDataset(X, X)
             loader = DataLoader(dataset, batch_size=min(16, len(X)), shuffle=True)

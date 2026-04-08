@@ -21,6 +21,8 @@ class FaissManager:
         self.device_id_map: Dict[int, str] = {}
         self.embedding_metadata: List[Dict[str, Any]] = []
         self.cluster_labels: Optional[np.ndarray] = None
+        # Store raw embeddings for retrieval since IndexIDMap doesn't support reconstruct
+        self._raw_embeddings: List[np.ndarray] = []
 
         self._lock = threading.Lock()
         self._init_index()
@@ -52,6 +54,10 @@ class FaissManager:
             ids = list(range(start_id, start_id + len(embeddings)))
 
             self.index.add_with_ids(embeddings, np.array(ids))
+            
+            # Store raw embeddings for retrieval
+            for i in range(len(embeddings)):
+                self._raw_embeddings.append(embeddings[i].copy())
 
             metadata = {
                 "device_id": device_id,
@@ -84,6 +90,10 @@ class FaissManager:
             ids = list(range(start_id, start_id + len(embeddings)))
 
             self.index.add_with_ids(embeddings, np.array(ids))
+            
+            # Store raw embeddings for retrieval
+            for i in range(len(embeddings)):
+                self._raw_embeddings.append(embeddings[i].copy())
 
             if metadata is None:
                 metadata = [{}] * len(embeddings)
@@ -115,11 +125,11 @@ class FaissManager:
     def get_cluster_embeddings(self, cluster_id: int) -> List[np.ndarray]:
         """Get embeddings for a specific cluster."""
         with self._lock:
-            if self.total == 0:
+            if self.total == 0 or len(self._raw_embeddings) == 0:
                 return []
             
-            all_embeddings = self.index.reconstruct_n(0, self.total)
-            return [all_embeddings[i] for i in range(self.total)]
+            # Return stored embeddings (IndexIDMap doesn't support reconstruct)
+            return [emb for emb in self._raw_embeddings]
 
     def get_cluster_summary(self) -> Dict[str, Any]:
         """Get summary of all clusters."""
@@ -156,6 +166,7 @@ class FaissManager:
             self.device_id_map = {}
             self.embedding_metadata = []
             self.cluster_labels = None
+            self._raw_embeddings = []
             self.total = 0
 
     def save(self):

@@ -219,9 +219,11 @@ class SecureTransmitter:
                         }
 
                 except Exception as e:
+                    import traceback
+                    error_msg = str(e) if str(e) else f"{type(e).__name__}: {traceback.format_exc()}"
                     return {
                         "success": False,
-                        "error": str(e),
+                        "error": error_msg,
                     }
 
         return {
