@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from edge_node.camera_node import LiveCameraNode
 
-REMOTE_HUB_URL = "http://10.243.38.174:8000"
+REMOTE_HUB_URL = os.getenv("HUB_URL", "http://localhost:8000")
 
 async def test_quick():
     print("="*60)

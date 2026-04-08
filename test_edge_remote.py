@@ -15,7 +15,7 @@ from edge_node.secure_transmitter import SecureTransmitter
 from edge_node.camera_node import LiveCameraNode
 
 
-REMOTE_HUB_URL = "http://10.243.38.174:8000"
+REMOTE_HUB_URL = os.getenv("HUB_URL", "http://localhost:8000")
 
 async def test_edge_with_remote_hub():
     """Test edge node with remote hub."""

@@ -5,7 +5,7 @@ Verifies network connectivity to the central hub server.
 
 Usage:
     python scripts/verify_hub_connectivity.py
-    python scripts/verify_hub_connectivity.py http://10.243.38.174:8000
+    python scripts/verify_hub_connectivity.py http://YOUR_HUB_IP:8000
 """
 import asyncio
 import os
@@ -99,16 +99,17 @@ def main():
     
     if hub_url == "http://localhost:8000":
         print("\n[WARN] NOTICE: Using default localhost hub URL")
-        print("   For remote hub use: python scripts/verify_hub_connectivity.py http://10.243.38.174:8000")
+        print("   For remote hub use: python scripts/verify_hub_connectivity.py http://YOUR_HUB_IP:8000")
     
     asyncio.run(test_hub_connectivity(hub_url))
     
     print("\n[INFO] Troubleshooting tips:")
-    print("   1. Verify hub server is running on 10.243.38.174")
+    print("   1. Verify hub server is running on the target machine")
     print("   2. Ensure port 8000 is open in Windows Firewall")
     print("   3. Check both machines are on the same network")
-    print("   4. Verify you can ping 10.243.38.174")
+    print("   4. Verify you can ping the hub IP")
 
 
 if __name__ == "__main__":
     main()
+

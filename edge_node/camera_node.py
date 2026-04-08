@@ -1,13 +1,10 @@
 """
 camera_node.py
-──────────────
+─────────────
 Live webcam inference loop for EdgeVisionNode.
 """
 
-import asyncio
-import logging
-import time
-import uuid
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -15,6 +12,16 @@ import cv2
 import numpy as np
 import torch
 from PIL import Image
+
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+import asyncio
+import logging
+import time
+import uuid
 
 from edge_node.vision_agent import EdgeVisionNode
 from edge_node.secure_transmitter import SecureTransmitter
@@ -48,16 +55,16 @@ class LiveCameraNode:
     def __init__(
         self,
         device_id: Optional[str] = None,
-        hub_url: str = "http://localhost:8000",
-        camera_index: int = 0,
-        inference_interval: float = 0.5,
+        hub_url: str = os.getenv("HUB_URL", "http://localhost:8000"),
+        camera_index: int = int(os.getenv("CAMERA_INDEX", "0")),
+        inference_interval: float = float(os.getenv("INFERENCE_INTERVAL", "0.5")),
         candidate_labels: Optional[list] = None,
-        key_path: str = "keys/encryption.key",
-        private_key_path: str = "keys/private_key.pem",
-        public_key_path: str = "keys/public_key.pem",
-        adapter_poll_interval: int = 30,
-        device: str = "auto",
-        use_fp16: bool = True,
+        key_path: str = os.getenv("EDGE_ENCRYPTION_KEY_PATH", "keys/encryption.key"),
+        private_key_path: str = os.getenv("EDGE_PRIVATE_KEY_PATH", "keys/private_key.pem"),
+        public_key_path: str = os.getenv("EDGE_PUBLIC_KEY_PATH", "keys/public_key.pem"),
+        adapter_poll_interval: int = int(os.getenv("ADAPTER_POLL_INTERVAL", "30")),
+        device: str = os.getenv("DEVICE", "auto"),
+        use_fp16: bool = os.getenv("USE_FP16", "true").lower() == "true",
     ):
         self.device_id = device_id or str(uuid.uuid4())
         self.hub_url = hub_url
@@ -334,3 +341,6 @@ class LiveCameraNode:
             frame, f"{decision}  {label} ({score:.1%})",
             (10, 38), cv2.FONT_HERSHEY_DUPLEX, 0.9, color, 2,
         )
+if __name__ == "__main__":
+    node = LiveCameraNode()
+    node.run()

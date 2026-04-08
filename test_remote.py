@@ -9,7 +9,7 @@ import os
 sys.path.insert(0, os.getcwd())
 
 # Remote hub server IP
-REMOTE_HUB_URL = "http://10.243.38.174:8000"
+REMOTE_HUB_URL = os.getenv("HUB_URL", "http://localhost:8000")
 
 async def test_remote_hub():
     """Test all endpoints against remote hub."""

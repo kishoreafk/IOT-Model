@@ -1,6 +1,6 @@
 """
 hub_server.py  (updated)
-────────────────────────
+───────────────────────
 Central Hub FastAPI application.
 
 New in this version:
@@ -18,9 +18,14 @@ New in this version:
   • GET  /ready                     → readiness probe
 """
 
+import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
 import asyncio
 import logging
-import os
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -186,8 +191,9 @@ async def ingress_update(payload: IngressPayload, background: BackgroundTasks):
 async def _process_ingress(task_id: str, encrypted_payload: str, device_id: str):
     """Background task: decrypt → route by trigger → FedAvg or retrain."""
     try:
-        from edge_node.secure_transmitter import SecureTransmitter
-        decrypted = SecureTransmitter.decrypt_and_verify(
+        # Use lightweight decrypt utility (no transformers dependency)
+        from central_hub.decrypt_utils import decrypt_payload
+        decrypted = decrypt_payload(
             encrypted_payload,
             key_path=os.getenv("HUB_ENCRYPTION_KEY_PATH", "keys/encryption.key"),
             public_key_path=os.getenv("HUB_PUBLIC_KEY_PATH", "keys/public_key.pem"),
