@@ -6,6 +6,7 @@ Live webcam inference loop for EdgeVisionNode.
 
 import asyncio
 import logging
+import os
 import time
 import uuid
 from pathlib import Path
@@ -91,6 +92,21 @@ class LiveCameraNode:
         )
 
         logger.info(f"[LiveCameraNode] device_id={self.device_id} hub={hub_url}")
+
+    def _get_broad_clip_categories(self) -> list[str]:
+        """Load broad real-world categories for CLIP zero-shot classification."""
+        broad_categories_path = "configs/broad_categories.txt"
+        if os.path.exists(broad_categories_path):
+            with open(broad_categories_path, "r") as f:
+                categories = [line.strip() for line in f.readlines() 
+                            if line.strip() and not line.strip().startswith('#')]
+            return categories
+        # Fallback broad categories if file not found
+        return [
+            "person", "car", "truck", "bus", "motorcycle", "bicycle",
+            "building", "road", "tree", "dog", "cat", "phone",
+            "laptop", "chair", "table", "door", "window", "food"
+        ]
 
     def start(self):
         """Start the camera loop (blocks until stopped or camera error)."""
