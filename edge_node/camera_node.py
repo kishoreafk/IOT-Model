@@ -48,7 +48,7 @@ class LiveCameraNode:
     def __init__(
         self,
         device_id: Optional[str] = None,
-        hub_url: str = "http://localhost:8000",
+        hub_url: str = "http://10.243.38.174:8000",
         camera_index: int = 0,
         inference_interval: float = 0.5,
         candidate_labels: Optional[list] = None,
@@ -177,7 +177,7 @@ class LiveCameraNode:
                     pil_image = Image.fromarray(rgb)
                     
                     try:
-                        decision, scores, labels = self.vision_node.detect_novelty(
+                        decision, scores, labels, pseudo_label = self.vision_node.run_inference(
                             pil_image, candidate_labels=self.candidate_labels
                         )
                         
@@ -190,7 +190,7 @@ class LiveCameraNode:
                         if decision == "Adapt_Local" and not self._skip_hub:
                             asyncio.create_task(self._handle_adapt_local(pil_image, top_label))
                         elif decision == "Escalate_Hub" and not self._skip_hub:
-                            asyncio.create_task(self._handle_escalate_hub(pil_image))
+                            asyncio.create_task(self._handle_escalate_hub(pil_image, pseudo_label))
                     except Exception as e:
                         print(f"[ERROR] Inference failed: {e}")
                 
@@ -226,7 +226,7 @@ class LiveCameraNode:
     async def _process_frame(self, pil_image: Image.Image, display_frame: np.ndarray):
         """Run novelty detection and route to correct action."""
         try:
-            decision, scores, labels = self.vision_node.detect_novelty(
+            decision, scores, labels, pseudo_label = self.vision_node.run_inference(
                 pil_image, candidate_labels=self.candidate_labels
             )
         except Exception as e:
@@ -244,7 +244,7 @@ class LiveCameraNode:
         if decision == "Adapt_Local":
             asyncio.create_task(self._handle_adapt_local(pil_image, top_label))
         elif decision == "Escalate_Hub":
-            asyncio.create_task(self._handle_escalate_hub(pil_image))
+            asyncio.create_task(self._handle_escalate_hub(pil_image, pseudo_label))
 
     async def _handle_adapt_local(self, image: Image.Image, pseudo_label: str):
         """LoRA fine-tune on the edge device, then push adapter weights to hub."""
@@ -274,9 +274,9 @@ class LiveCameraNode:
         else:
             logger.warning(f"[Adapt_Local] Hub transmission failed: {result}")
 
-    async def _handle_escalate_hub(self, image: Image.Image):
+    async def _handle_escalate_hub(self, image: Image.Image, pseudo_label: str):
         """Extract CLIP embedding and send to hub for clustering and retraining."""
-        logger.info("[Escalate_Hub] Sending embedding to hub for retraining…")
+        logger.info(f"[Escalate_Hub] Sending embedding to hub for retraining… (label='{pseudo_label}')")
         try:
             clip_embedding = self.vision_node.extract_features(image)
         except Exception as e:
@@ -287,6 +287,7 @@ class LiveCameraNode:
             clip_embedding,
             metadata={
                 "trigger": "escalate_hub",
+                "pseudo_label": pseudo_label,
                 "adapter_version": self.sync_client.local_version,
             },
             sign_payload=True,
