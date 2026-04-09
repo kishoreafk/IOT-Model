@@ -243,11 +243,14 @@ class EdgeVisionNode:
             decision = "Known"
         elif vit_confidence >= self.adapt_threshold:
             decision = "Adapt_Local"
-            # Use CLIP to get a reliable pseudo-label for local fine-tuning
-            pseudo_label = self._get_clip_zero_shot_label(image, candidate_labels)
+            # Use CLIP with BROAD real-world categories, not limited ViT classes
+            broad_categories = self._get_broad_clip_categories()
+            pseudo_label = self._get_clip_zero_shot_label(image, broad_categories)
         else:
             decision = "Escalate_Hub"
-            pseudo_label = self._get_clip_zero_shot_label(image, candidate_labels)
+            # Use CLIP with BROAD real-world categories, not limited ViT classes
+            broad_categories = self._get_broad_clip_categories()
+            pseudo_label = self._get_clip_zero_shot_label(image, broad_categories)
 
         return decision, vit_scores, vit_labels, pseudo_label
 
@@ -304,7 +307,7 @@ class EdgeVisionNode:
         return decision, scores, labels
 
     def _get_default_labels(self) -> List[str]:
-        """Load default class labels from config."""
+        """Load default class labels from config (ViT training classes)."""
         class_names_path = "configs/class_names.txt"
         if os.path.exists(class_names_path):
             with open(class_names_path, "r") as f:
@@ -321,6 +324,21 @@ class EdgeVisionNode:
             "bear", "ladybug", "fly", "bee", "grasshopper",
             "stick_insect", "cockroach", "mantis", "dragonfly", "butterfly",
             "butterfly", "cucumber", "guinea_pig", "pig", "ox"
+        ]
+
+    def _get_broad_clip_categories(self) -> List[str]:
+        """Load broad real-world categories for CLIP zero-shot classification."""
+        broad_categories_path = "configs/broad_categories.txt"
+        if os.path.exists(broad_categories_path):
+            with open(broad_categories_path, "r") as f:
+                categories = [line.strip() for line in f.readlines() 
+                            if line.strip() and not line.strip().startswith('#')]
+            return categories
+        # Fallback broad categories if file not found
+        return [
+            "person", "car", "truck", "bus", "motorcycle", "bicycle",
+            "building", "road", "tree", "dog", "cat", "phone",
+            "laptop", "chair", "table", "door", "window", "food"
         ]
 
     def extract_features(self, image: Image.Image) -> torch.Tensor:

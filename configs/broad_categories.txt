@@ -1,0 +1,163 @@
+# Broad real-world categories for CLIP zero-shot classification
+# This list contains common objects, scenes, and entities that cameras typically observe
+# CLIP will use these by default when ViT is uncertain
+
+# People and Animals
+person
+man
+woman
+child
+baby
+dog
+cat
+bird
+fish
+animal
+pet
+wild animal
+
+# Vehicles
+car
+truck
+bus
+motorcycle
+bicycle
+van
+suv
+taxi
+police car
+fire truck
+ambulance
+train
+airplane
+boat
+ship
+
+# Buildings and Infrastructure
+building
+house
+apartment
+office building
+factory
+warehouse
+road
+street
+sidewalk
+bridge
+tunnel
+parking lot
+traffic light
+stop sign
+traffic sign
+lamp post
+fence
+wall
+
+# Common Objects
+phone
+laptop
+computer
+tablet
+camera
+television
+monitor
+keyboard
+mouse
+chair
+table
+desk
+couch
+bed
+door
+window
+book
+paper
+pen
+bottle
+cup
+glass
+plate
+food
+fruit
+vegetable
+bag
+backpack
+suitcase
+box
+package
+umbrella
+
+# Nature and Environment
+tree
+plant
+flower
+grass
+sky
+cloud
+sun
+moon
+star
+rain
+snow
+fog
+smoke
+fire
+water
+river
+lake
+ocean
+mountain
+hill
+forest
+field
+
+# Actions and Activities
+walking
+running
+sitting
+standing
+driving
+riding
+working
+playing
+eating
+drinking
+talking
+using phone
+looking at camera
+
+# Scenes
+street scene
+park
+indoor
+outdoor
+city
+urban
+rural
+night time
+day time
+crowd
+empty room
+
+# Safety and Security
+person with helmet
+person with mask
+group of people
+suspicious activity
+emergency situation
+fire hazard
+obstacle
+blocked path
+
+# Other common categories
+vehicle
+transportation
+electronic device
+furniture
+tool
+equipment
+waste
+garbage
+construction
+repair work
+delivery
