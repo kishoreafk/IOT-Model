@@ -63,10 +63,7 @@ class LiveCameraNode:
         self.hub_url = hub_url
         self.camera_index = camera_index
         self.inference_interval = inference_interval
-        self.candidate_labels = candidate_labels or [
-            "car", "truck", "person", "bicycle", "dog",
-            "cat", "chair", "table", "phone", "laptop",
-        ]
+        self.candidate_labels = candidate_labels or self._get_broad_clip_categories()
         self.adapter_poll_interval = adapter_poll_interval
         self._last_inference_time = 0.0
         self._running = False
@@ -287,7 +284,7 @@ class LiveCameraNode:
             clip_embedding,
             metadata={
                 "trigger": "escalate_hub",
-                "pseudo_label": pseudo_label,
+                "clip_pseudo_label": pseudo_label,
                 "adapter_version": self.sync_client.local_version,
             },
             sign_payload=True,
